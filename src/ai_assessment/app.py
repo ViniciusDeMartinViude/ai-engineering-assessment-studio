@@ -9,19 +9,35 @@ from .core.workspace import CandidateWorkspace
 from .modules.pages import PAGES, PageDefinition
 
 
+DEFAULT_CANDIDATE_ID = "C014"
+
+
 def default_workspace_root() -> Path:
     configured = os.environ.get("AI_ASSESSMENT_WORKSPACE")
     if configured:
         return Path(configured)
-    return Path.cwd() / "candidate_workspaces" / "C014"
+    return Path.cwd() / "candidate_workspaces" / DEFAULT_CANDIDATE_ID
 
 
-def load_workspace(path: Path, candidate_id: str) -> CandidateWorkspace:
+def load_workspace(path: Path, candidate_id: str | None = None) -> CandidateWorkspace:
     if (path / "session.json").exists():
         workspace = CandidateWorkspace.open(path)
+        if (
+            candidate_id is not None
+            and candidate_id != workspace.session.candidate_id
+        ):
+            raise ValueError(
+                "Candidate ID mismatch: workspace contains "
+                f"{workspace.session.candidate_id!r}, but --candidate-id requested "
+                f"{candidate_id!r}."
+            )
         workspace.record_event("workspace.opened", {"source": "app"})
         return workspace
-    return CandidateWorkspace.create(path, candidate_id=candidate_id, mode="training")
+    return CandidateWorkspace.create(
+        path,
+        candidate_id=candidate_id or DEFAULT_CANDIDATE_ID,
+        mode="training",
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -34,8 +50,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--candidate-id",
-        default="C014",
-        help="Candidate identifier for a newly created workspace.",
+        default=None,
+        help=(
+            "Candidate identifier for a newly created workspace. "
+            f"Defaults to {DEFAULT_CANDIDATE_ID}; when reopening, omit it or match session.json."
+        ),
     )
     parser.add_argument(
         "--headless-check",
@@ -48,7 +67,10 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    workspace = load_workspace(args.workspace, args.candidate_id)
+    try:
+        workspace = load_workspace(args.workspace, args.candidate_id)
+    except ValueError as exc:
+        parser.error(str(exc))
 
     if args.headless_check:
         pending = len(workspace.events.pending_events())
@@ -68,7 +90,6 @@ def main(argv: list[str] | None = None) -> int:
             QListWidget,
             QListWidgetItem,
             QMainWindow,
-            QPushButton,
             QStackedWidget,
             QVBoxLayout,
             QWidget,
@@ -148,13 +169,9 @@ def main(argv: list[str] | None = None) -> int:
             for page in PAGES:
                 self.nav.addItem(QListWidgetItem(page.title))
 
-            ack_button = QPushButton("Acknowledge first pending event")
-            ack_button.clicked.connect(self.acknowledge_first_pending)
-
             sidebar_layout.addWidget(product)
             sidebar_layout.addWidget(candidate)
             sidebar_layout.addWidget(self.nav, 1)
-            sidebar_layout.addWidget(ack_button)
 
             self.stack = QStackedWidget()
             for page in PAGES:
@@ -171,22 +188,6 @@ def main(argv: list[str] | None = None) -> int:
             total = len(workspace.events.read_events())
             pending = len(workspace.events.pending_events())
             return f"{total} local events, {pending} awaiting acknowledgement"
-
-        def acknowledge_first_pending(self) -> None:
-            pending = workspace.events.pending_events()
-            if not pending:
-                self.statusBar().showMessage("No pending events to acknowledge")
-                return
-            event = pending[0]
-            workspace.events.acknowledge(
-                event.event_id,
-                receipt_id=f"local-demo-{event.sequence}",
-            )
-            workspace.record_event(
-                "event.acknowledged",
-                {"event_id": event.event_id, "receipt": f"local-demo-{event.sequence}"},
-            )
-            self.statusBar().showMessage(self.status_message())
 
     app = QApplication([sys.argv[0]])
     app.setStyleSheet(
@@ -245,16 +246,6 @@ def main(argv: list[str] | None = None) -> int:
             border: 1px solid #d6e1dc;
             border-radius: 6px;
             padding: 10px;
-        }
-        QPushButton {
-            background: #174c36;
-            color: white;
-            border: 0;
-            border-radius: 6px;
-            padding: 10px;
-        }
-        QPushButton:hover {
-            background: #216246;
         }
         """
     )
