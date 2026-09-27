@@ -1,8 +1,8 @@
 # AI Engineering Assessment Studio
 
-AI Engineering date-fruit training and assessment workstation. M1 provides a PySide6 desktop shell with navigation across the planned application pages, a candidate workspace, append-only local event logs, and idempotent server-receipt acknowledgement storage. M2 adds an embedded four-point camera-to-robot calibration workspace.
+AI Engineering date-fruit training and assessment workstation. M1 provides a PySide6 desktop shell with navigation across the planned application pages, a candidate workspace, append-only local event logs, and idempotent server-receipt acknowledgement storage. M2 adds an embedded four-point camera-to-robot calibration workspace. M3 adds Dataset Studio for read-only YOLO dataset inspection, four-class subset export, and printable object exports.
 
-The M1/M2 shell does not connect to an organizer server yet. Local events remain pending until a future organizer integration records a server acknowledgement. Calibration is a 2D planar mapping tool only; it does not command a robot, run YOLO, or infer Z coordinates. Dataset, vision inference, robot, training, IDE, AI gateway, and submission workflows are not implemented yet.
+The M1-M3 shell does not connect to an organizer server yet. Local events remain pending until a future organizer integration records a server acknowledgement. Calibration is a 2D planar mapping tool only; it does not command a robot, run YOLO, or infer Z coordinates. Dataset Studio does not train or run YOLO inference and does not move a robot.
 
 Read [Architecture v1](docs/ARCHITECTURE_V1.md) and [AGENTS.md](AGENTS.md) for the project boundaries and acceptance gates.
 
@@ -19,7 +19,7 @@ python -m pip install -e ".[gui]"
 
 If the repository is in a different folder, replace the `cd` path. The editable install makes the `ai_assessment` package available to the commands below.
 
-## Run M1
+## Run the shell and tests
 
 Create or reopen the default `C014` workspace and launch the desktop shell:
 
@@ -55,3 +55,23 @@ After calculating the matrix, click the frozen image to see a rounded integer ro
 Use **Save to workspace** and **Load workspace calibration** to persist the active calibration at `candidate_workspaces\C014\calibration\calibration.json`. The service reads legacy schema versions 1 and 2. It records the point pairs, transform, image geometry, coordinate convention, camera metadata, optional ROI metadata, and an image snapshot. A saved calibration cannot be applied to an image with a different width or height.
 
 The sample package has no live robot credentials, API keys, copyrighted dataset payload, or candidate data.
+
+## M3 Dataset Studio
+
+Open **Dataset** in the sidebar and choose a local YOLO export whose root contains `data.yaml` plus image and label folders for `train`, `valid` or `val`, and `test`. Scanning is read-only and runs away from the Qt interface. The page reports class IDs and names, image/object counts by split, missing or malformed files, and previews boxes and segmentation polygons.
+
+Select exactly four classes and arrange their order. **Export working subset** writes an atomic, workspace-owned subset below `candidate_workspaces\C014\dataset\`. The selected original IDs are remapped to new IDs `0` through `3`; split membership and annotation coordinates are preserved. Images containing both selected and unselected classes are excluded and reported rather than silently losing objects. Test images remain in the test split. Each export includes `data.yaml`, a versioned manifest, source/version metadata when available, counts, exclusions, and SHA-256 hashes.
+
+The **Print exports** tab adapts the preserved legacy utility. It can write transparent PNGs, white-background JPEGs, and A4 PDFs with 6 x 4 cm cards, cut marks, shape cut lines, fit rotation, and class names under `candidate_workspaces\C014\exports\print\`. Box-only annotations are clearly reported as rectangular cutouts. The original dataset and legacy source are never modified. Dataset selection and successful exports are recorded in the local event log; no organizer signature or lock is claimed in M3.
+
+The GUI extra installs the required M3 dependencies, including PyYAML and ReportLab:
+
+```bat
+python -m pip install -e ".[gui]"
+```
+
+The full M1-M3 test suite remains:
+
+```bat
+python -m unittest discover -s tests -v
+```

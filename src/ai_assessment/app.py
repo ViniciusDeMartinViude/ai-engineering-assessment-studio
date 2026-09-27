@@ -95,9 +95,10 @@ def main(argv: list[str] | None = None) -> int:
             QWidget,
         )
         from .modules.calibration import CalibrationPage
+        from .modules.dataset import DatasetPage
     except ImportError as exc:
         print(
-            "PySide6, NumPy, and OpenCV are required to launch the desktop shell. "
+            "PySide6, NumPy, OpenCV, and PyYAML are required to launch the desktop shell. "
             "Run with --headless-check to verify workspace services.",
             file=sys.stderr,
         )
@@ -176,10 +177,14 @@ def main(argv: list[str] | None = None) -> int:
 
             self.stack = QStackedWidget()
             self.calibration_page = None
+            self.dataset_page = None
             for page in PAGES:
                 if page.title == "Calibration":
                     self.calibration_page = CalibrationPage(workspace)
                     self.stack.addWidget(self.calibration_page)
+                elif page.title == "Dataset":
+                    self.dataset_page = DatasetPage(workspace)
+                    self.stack.addWidget(self.dataset_page)
                 else:
                     self.stack.addWidget(Page(page))
             self.nav.currentRowChanged.connect(self.stack.setCurrentIndex)
@@ -198,6 +203,8 @@ def main(argv: list[str] | None = None) -> int:
         def shutdown(self) -> None:
             if self.calibration_page is not None:
                 self.calibration_page.shutdown()
+            if self.dataset_page is not None:
+                self.dataset_page.shutdown()
 
     app = QApplication([sys.argv[0]])
     app.setStyleSheet(
