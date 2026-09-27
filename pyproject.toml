@@ -18,6 +18,8 @@ gui = [
     "opencv-python>=4.8,<5",
     "PyYAML>=6,<7",
     "reportlab>=4,<5",
+    "ultralytics>=8.3,<9",
+    "onnxruntime>=1.17,<2",
 ]
 test = []
 

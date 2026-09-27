@@ -96,6 +96,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         from .modules.calibration import CalibrationPage
         from .modules.dataset import DatasetPage
+        from .modules.vision import VisionPage
     except ImportError as exc:
         print(
             "PySide6, NumPy, OpenCV, and PyYAML are required to launch the desktop shell. "
@@ -178,6 +179,7 @@ def main(argv: list[str] | None = None) -> int:
             self.stack = QStackedWidget()
             self.calibration_page = None
             self.dataset_page = None
+            self.vision_page = None
             for page in PAGES:
                 if page.title == "Calibration":
                     self.calibration_page = CalibrationPage(workspace)
@@ -185,6 +187,9 @@ def main(argv: list[str] | None = None) -> int:
                 elif page.title == "Dataset":
                     self.dataset_page = DatasetPage(workspace)
                     self.stack.addWidget(self.dataset_page)
+                elif page.title == "Vision":
+                    self.vision_page = VisionPage(workspace)
+                    self.stack.addWidget(self.vision_page)
                 else:
                     self.stack.addWidget(Page(page))
             self.nav.currentRowChanged.connect(self.stack.setCurrentIndex)
@@ -205,6 +210,8 @@ def main(argv: list[str] | None = None) -> int:
                 self.calibration_page.shutdown()
             if self.dataset_page is not None:
                 self.dataset_page.shutdown()
+            if self.vision_page is not None:
+                self.vision_page.shutdown()
 
     app = QApplication([sys.argv[0]])
     app.setStyleSheet(

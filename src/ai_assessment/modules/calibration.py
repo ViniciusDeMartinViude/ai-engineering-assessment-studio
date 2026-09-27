@@ -36,7 +36,7 @@ from ..services.calibration import (
     CalibrationService,
     TransformType,
 )
-from ..services.camera import CameraWorker, ImageLoadWorker
+from ..services.camera import CameraOwnership, CameraWorker, ImageLoadWorker
 
 
 def _qimage_from_rgb(rgb: Any) -> QImage:
@@ -499,6 +499,10 @@ class CalibrationPage(QWidget):
         if self._camera_thread is not None:
             self._stop_camera()
             return
+        if not CameraOwnership.acquire("calibration"):
+            owner = CameraOwnership.current_owner() or "another module"
+            self._set_status(f"Camera is already in use by {owner}. Stop it before starting calibration.")
+            return
         self._source_mode = "camera"
         self._frozen = False
         self._clear_points()
@@ -543,6 +547,7 @@ class CalibrationPage(QWidget):
 
     @Slot()
     def _camera_thread_finished(self) -> None:
+        CameraOwnership.release("calibration")
         self._camera_thread = None
         self._camera_worker = None
         self.start_button.setText("Start camera")

@@ -1,8 +1,8 @@
 # AI Engineering Assessment Studio
 
-AI Engineering date-fruit training and assessment workstation. M1 provides a PySide6 desktop shell with navigation across the planned application pages, a candidate workspace, append-only local event logs, and idempotent server-receipt acknowledgement storage. M2 adds an embedded four-point camera-to-robot calibration workspace. M3 adds Dataset Studio for read-only YOLO dataset inspection, four-class subset export, and printable object exports.
+AI Engineering date-fruit training and assessment workstation. M1 provides a PySide6 desktop shell with navigation across the planned application pages, a candidate workspace, append-only local event logs, and idempotent server-receipt acknowledgement storage. M2 adds an embedded four-point camera-to-robot calibration workspace. M3 adds Dataset Studio for read-only YOLO dataset inspection, four-class subset export, and printable object exports. M4 adds an embedded Vision Studio for camera preview, ROI processing, local YOLO inference, and full-frame detection centers.
 
-The M1-M3 shell does not connect to an organizer server yet. Local events remain pending until a future organizer integration records a server acknowledgement. Calibration is a 2D planar mapping tool only; it does not command a robot, run YOLO, or infer Z coordinates. Dataset Studio does not train or run YOLO inference and does not move a robot.
+The M1-M4 shell does not connect to an organizer server yet. Local events remain pending until a future organizer integration records a server acknowledgement. Calibration is a 2D planar mapping tool only and Vision Studio never sends robot commands or performs automatic sorting. Dataset Studio does not train YOLO.
 
 Read [Architecture v1](docs/ARCHITECTURE_V1.md) and [AGENTS.md](AGENTS.md) for the project boundaries and acceptance gates.
 
@@ -35,7 +35,7 @@ Run the non-GUI workspace check:
 python -m ai_assessment --headless-check --workspace candidate_workspaces\C014
 ```
 
-Run the M1 tests:
+Run the full M1-M4 tests:
 
 ```bat
 python -m unittest discover -s tests -v
@@ -70,8 +70,18 @@ The GUI extra installs the required M3 dependencies, including PyYAML and Report
 python -m pip install -e ".[gui]"
 ```
 
-The full M1-M3 test suite remains:
+The full M1-M4 test suite remains:
 
 ```bat
 python -m unittest discover -s tests -v
 ```
+
+## M4 Vision Studio
+
+Open **Vision** in the sidebar. Start the camera before selecting a model for a live raw preview; camera capture, model loading, and inference run outside the Qt interface. Select an existing local `.pt` or supported `.onnx` file with **Browse model...**. The app never downloads weights. A local `yolo26n.pt` is used as a convenience default only when it already exists in the current folder or the workspace `models` folder.
+
+Vision Studio shows the untouched full-frame camera image beside the corrected ROI sent to YOLO. Drag an ROI on the raw image, tune confidence, software brightness and contrast, and request exposure, focus, or white-balance values. The camera panel shows requested values and driver read-back values because camera drivers may ignore or quantize settings. The actual inference device is shown after model load.
+
+Detection rows contain class ID/name, confidence, full-frame bounding box, full-frame center pixels, frame ID, and optional robot X/Y. A saved M2 calibration is used only when its full-frame geometry matches the current frame; a mismatch is shown as a warning. A class ID is never treated as a robot position. **Save snapshot** writes the raw frame, annotated processed image, and metadata under `candidate_workspaces\C014\exports\vision\`. The active camera profile is persisted at `candidate_workspaces\C014\camera\vision_profile.json`.
+
+Calibration and Vision share a camera ownership guard, so starting one module while the other has the webcam reports which module must be stopped first. Vision logs camera start/stop, model load, ROI changes, and snapshots without logging every frame.

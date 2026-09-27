@@ -10,6 +10,32 @@ import cv2
 from PySide6.QtCore import QObject, Signal, Slot, QThread
 
 
+class CameraOwnership:
+    """Process-local ownership guard for the single shared webcam."""
+
+    _lock = threading.Lock()
+    _owner: str | None = None
+
+    @classmethod
+    def acquire(cls, owner: str) -> bool:
+        with cls._lock:
+            if cls._owner is not None and cls._owner != owner:
+                return False
+            cls._owner = owner
+            return True
+
+    @classmethod
+    def release(cls, owner: str) -> None:
+        with cls._lock:
+            if cls._owner == owner:
+                cls._owner = None
+
+    @classmethod
+    def current_owner(cls) -> str | None:
+        with cls._lock:
+            return cls._owner
+
+
 class CameraWorker(QObject):
     frame_ready = Signal(object)
     metadata_ready = Signal(object)
