@@ -1,8 +1,8 @@
 # AI Engineering Assessment Studio
 
-AI Engineering date-fruit training and assessment workstation. M1 currently provides a PySide6 desktop shell with navigation across the planned application pages, a candidate workspace, append-only local event logs, and idempotent server-receipt acknowledgement storage.
+AI Engineering date-fruit training and assessment workstation. M1 provides a PySide6 desktop shell with navigation across the planned application pages, a candidate workspace, append-only local event logs, and idempotent server-receipt acknowledgement storage. M2 adds an embedded four-point camera-to-robot calibration workspace.
 
-The M1 shell does not connect to an organizer server yet. Local events remain pending until a future organizer integration records a server acknowledgement. No calibration, dataset, vision, robot, training, IDE, AI gateway, or submission workflow is implemented in this milestone.
+The M1/M2 shell does not connect to an organizer server yet. Local events remain pending until a future organizer integration records a server acknowledgement. Calibration is a 2D planar mapping tool only; it does not command a robot, run YOLO, or infer Z coordinates. Dataset, vision inference, robot, training, IDE, AI gateway, and submission workflows are not implemented yet.
 
 Read [Architecture v1](docs/ARCHITECTURE_V1.md) and [AGENTS.md](AGENTS.md) for the project boundaries and acceptance gates.
 
@@ -42,5 +42,16 @@ python -m unittest discover -s tests -v
 ```
 
 Events are stored in `candidate_workspaces\C014\logs\events.jsonl`; server receipts are stored in `candidate_workspaces\C014\logs\event_acks.jsonl`.
+
+## M2 calibration
+
+Open the **Calibration** page from the application sidebar. Start a camera or open a saved image, freeze the full-frame image, select four image points, enter their matching robot X/Y coordinates, and choose exactly one transform:
+
+- `2 x 3 Affine` for a plane where perspective is negligible.
+- `3 x 3 Perspective` for a plane viewed at an angle.
+
+After calculating the matrix, click the frozen image to see a rounded integer robot X/Y prediction. The 5x cursor magnifier shows a pixel-level view. The matrix display is rounded to two decimals, while the workspace file retains full precision.
+
+Use **Save to workspace** and **Load workspace calibration** to persist the active calibration at `candidate_workspaces\C014\calibration\calibration.json`. The service reads legacy schema versions 1 and 2. It records the point pairs, transform, image geometry, coordinate convention, camera metadata, optional ROI metadata, and an image snapshot. A saved calibration cannot be applied to an image with a different width or height.
 
 The sample package has no live robot credentials, API keys, copyrighted dataset payload, or candidate data.

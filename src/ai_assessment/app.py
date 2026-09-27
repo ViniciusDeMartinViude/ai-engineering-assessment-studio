@@ -94,9 +94,10 @@ def main(argv: list[str] | None = None) -> int:
             QVBoxLayout,
             QWidget,
         )
+        from .modules.calibration import CalibrationPage
     except ImportError as exc:
         print(
-            "PySide6 is required to launch the desktop shell. "
+            "PySide6, NumPy, and OpenCV are required to launch the desktop shell. "
             "Run with --headless-check to verify workspace services.",
             file=sys.stderr,
         )
@@ -174,8 +175,13 @@ def main(argv: list[str] | None = None) -> int:
             sidebar_layout.addWidget(self.nav, 1)
 
             self.stack = QStackedWidget()
+            self.calibration_page = None
             for page in PAGES:
-                self.stack.addWidget(Page(page))
+                if page.title == "Calibration":
+                    self.calibration_page = CalibrationPage(workspace)
+                    self.stack.addWidget(self.calibration_page)
+                else:
+                    self.stack.addWidget(Page(page))
             self.nav.currentRowChanged.connect(self.stack.setCurrentIndex)
             self.nav.setCurrentRow(0)
 
@@ -188,6 +194,10 @@ def main(argv: list[str] | None = None) -> int:
             total = len(workspace.events.read_events())
             pending = len(workspace.events.pending_events())
             return f"{total} local events, {pending} awaiting acknowledgement"
+
+        def shutdown(self) -> None:
+            if self.calibration_page is not None:
+                self.calibration_page.shutdown()
 
     app = QApplication([sys.argv[0]])
     app.setStyleSheet(
@@ -250,6 +260,7 @@ def main(argv: list[str] | None = None) -> int:
         """
     )
     window = MainWindow()
+    app.aboutToQuit.connect(window.shutdown)
     window.show()
     return app.exec()
 

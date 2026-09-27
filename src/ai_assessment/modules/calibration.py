@@ -1,0 +1,837 @@
+"""M2 calibration workspace embedded in the main PySide6 shell."""
+
+from __future__ import annotations
+
+import binascii
+from dataclasses import replace
+from pathlib import Path
+from typing import Any
+
+from PySide6.QtCore import QPoint, QRectF, Qt, QBuffer, QIODevice, QThread, Signal, Slot
+from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen
+from PySide6.QtWidgets import (
+    QAbstractSpinBox,
+    QButtonGroup,
+    QDoubleSpinBox,
+    QFileDialog,
+    QFrame,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QPlainTextEdit,
+    QPushButton,
+    QRadioButton,
+    QScrollArea,
+    QSpinBox,
+    QSplitter,
+    QVBoxLayout,
+    QWidget,
+)
+
+from ..core.workspace import CandidateWorkspace
+from ..services.calibration import (
+    CalibrationError,
+    CalibrationGeometryMismatchError,
+    CalibrationRecord,
+    CalibrationService,
+    TransformType,
+)
+from ..services.camera import CameraWorker, ImageLoadWorker
+
+
+def _qimage_from_rgb(rgb: Any) -> QImage:
+    image = QImage(
+        rgb.data,
+        int(rgb.shape[1]),
+        int(rgb.shape[0]),
+        int(rgb.strides[0]),
+        QImage.Format.Format_RGB888,
+    )
+    return image.copy()
+
+
+def _format_matrix(matrix: tuple[tuple[float, ...], ...]) -> str:
+    values = [
+        ["0.00" if abs(value) < 0.005 else f"{value:.2f}" for value in row]
+        for row in matrix
+    ]
+    widths = [max(len(row[column]) for row in values) for column in range(3)]
+    if len(values) == 2:
+        left, right = ("[", "["), ("]", "]")
+    else:
+        left, right = ("[", "|", "["), ("]", "|", "]")
+    return "\n".join(
+        f"{left[index]}  {'   '.join(value.rjust(widths[column]) for column, value in enumerate(row))}  {right[index]}"
+        for index, row in enumerate(values)
+    )
+
+
+class CalibrationImageView(QWidget):
+    clicked = Signal(float, float)
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.setObjectName("calibrationImageView")
+        self.setMinimumSize(440, 320)
+        self.image = QImage()
+        self.points: list[tuple[float, float] | None] = [None] * 4
+        self.test_point: tuple[float, float] | None = None
+        self.hover_pixel: tuple[int, int] | None = None
+        self.hover_widget_x = 0.0
+        self.setMouseTracking(True)
+        self.setCursor(Qt.CursorShape.CrossCursor)
+
+    def set_image(self, image: QImage) -> None:
+        if image.isNull() or (
+            not self.image.isNull() and self.image.size() != image.size()
+        ):
+            self.hover_pixel = None
+        self.image = image
+        self.update()
+
+    def set_points(self, points: list[tuple[float, float] | None]) -> None:
+        self.points = points[:]
+        self.update()
+
+    def image_rect(self) -> QRectF:
+        if self.image.isNull():
+            return QRectF()
+        ratio = min(
+            self.width() / self.image.width(), self.height() / self.image.height()
+        )
+        width = self.image.width() * ratio
+        height = self.image.height() * ratio
+        return QRectF(
+            (self.width() - width) / 2,
+            (self.height() - height) / 2,
+            width,
+            height,
+        )
+
+    def pixel_at(self, position: Any) -> tuple[float, float] | None:
+        rectangle = self.image_rect()
+        if rectangle.isNull() or not rectangle.contains(position):
+            return None
+        u = max(
+            0.0,
+            min(
+                self.image.width() - 1.0,
+                (position.x() - rectangle.x())
+                * self.image.width()
+                / rectangle.width(),
+            ),
+        )
+        v = max(
+            0.0,
+            min(
+                self.image.height() - 1.0,
+                (position.y() - rectangle.y())
+                * self.image.height()
+                / rectangle.height(),
+            ),
+        )
+        return u, v
+
+    def mouseMoveEvent(self, event: Any) -> None:
+        pixel = self.pixel_at(event.position())
+        self.hover_pixel = (
+            (round(pixel[0]), round(pixel[1])) if pixel is not None else None
+        )
+        self.hover_widget_x = event.position().x()
+        self.update()
+        super().mouseMoveEvent(event)
+
+    def leaveEvent(self, event: Any) -> None:
+        self.hover_pixel = None
+        self.update()
+        super().leaveEvent(event)
+
+    def mousePressEvent(self, event: Any) -> None:
+        pixel = self.pixel_at(event.position())
+        if pixel is not None and event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit(*pixel)
+        super().mousePressEvent(event)
+
+    def paintEvent(self, event: Any) -> None:
+        del event
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), QColor("#eaf1f7"))
+        if self.image.isNull():
+            painter.setPen(QColor("#526b83"))
+            painter.setFont(QFont("Segoe UI", 15))
+            painter.drawText(
+                self.rect(),
+                Qt.AlignmentFlag.AlignCenter,
+                "Start a camera or open an image\nThen freeze the frame and select four points",
+            )
+            return
+        rectangle = self.image_rect()
+        painter.drawImage(rectangle, self.image)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        for index, point in enumerate(self.points):
+            if point is not None:
+                self._draw_marker(painter, rectangle, point, str(index + 1), QColor("#ffad33"))
+        if self.test_point is not None:
+            self._draw_marker(painter, rectangle, self.test_point, "T", QColor("#ffd447"))
+        if self.hover_pixel is not None:
+            self._draw_magnifier(painter)
+
+    def _draw_marker(
+        self,
+        painter: QPainter,
+        rectangle: QRectF,
+        point: tuple[float, float],
+        label: str,
+        color: QColor,
+    ) -> None:
+        px = rectangle.x() + point[0] * rectangle.width() / self.image.width()
+        py = rectangle.y() + point[1] * rectangle.height() / self.image.height()
+        painter.setPen(QPen(QColor("#111111"), 4))
+        painter.drawEllipse(int(px - 6), int(py - 6), 12, 12)
+        painter.setPen(QPen(color, 3))
+        painter.drawEllipse(int(px - 6), int(py - 6), 12, 12)
+        painter.drawLine(int(px - 12), int(py), int(px + 12), int(py))
+        painter.drawLine(int(px), int(py - 12), int(px), int(py + 12))
+        font = QFont("Segoe UI", 12)
+        font.setBold(True)
+        painter.setFont(font)
+        painter.drawText(int(px + 13), int(py - 10), label)
+
+    def _draw_magnifier(self, painter: QPainter) -> None:
+        if self.hover_pixel is None:
+            return
+        u, v = self.hover_pixel
+        span, scale = 35, 5
+        tile = QImage(span, span, QImage.Format.Format_RGB32)
+        tile.fill(QColor("#eaf1f7"))
+        tile_painter = QPainter(tile)
+        tile_painter.drawImage(QPoint(span // 2 - u, span // 2 - v), self.image)
+        tile_painter.end()
+
+        side = span * scale + 20
+        left = 12 if self.hover_widget_x > self.width() / 2 else self.width() - side - 12
+        top = 12
+        card = QRectF(left, top, side, side + 42)
+        image_target = QRectF(left + 10, top + 34, span * scale, span * scale)
+        painter.setBrush(QColor("#ffffff"))
+        painter.setPen(QPen(QColor("#087f75"), 2))
+        painter.drawRoundedRect(card, 9, 9)
+        painter.setPen(QColor("#17304d"))
+        painter.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
+        painter.drawText(
+            QRectF(left + 10, top + 4, side - 20, 25),
+            Qt.AlignmentFlag.AlignVCenter,
+            f"5x   u={u}   v={v}",
+        )
+        painter.save()
+        painter.setClipRect(image_target)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)
+        painter.drawImage(image_target, tile)
+        painter.restore()
+        painter.setPen(QPen(QColor("#cbd9e6"), 1))
+        painter.drawRect(image_target)
+        center_x, center_y = image_target.center().x(), image_target.center().y()
+        for color, thickness in ((QColor("#ffffff"), 4), (QColor("#f16b35"), 2)):
+            painter.setPen(QPen(color, thickness))
+            painter.drawLine(int(center_x - 12), int(center_y), int(center_x + 12), int(center_y))
+            painter.drawLine(int(center_x), int(center_y - 12), int(center_x), int(center_y + 12))
+
+
+def _numeric_box() -> QDoubleSpinBox:
+    box = QDoubleSpinBox()
+    box.setRange(-1_000_000_000, 1_000_000_000)
+    box.setDecimals(1)
+    box.setSingleStep(0.1)
+    box.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+    box.setAlignment(Qt.AlignmentFlag.AlignRight)
+    box.setMinimumWidth(96)
+    return box
+
+
+class CalibrationPage(QWidget):
+    """Four-point calibration page with non-blocking camera/image workers."""
+
+    status_changed = Signal(str)
+
+    def __init__(self, workspace: CandidateWorkspace) -> None:
+        super().__init__()
+        self.workspace = workspace
+        self.setObjectName("calibrationPage")
+        self._current_image = QImage()
+        self._source_mode: str | None = None
+        self._frozen = False
+        self._points: list[tuple[float, float] | None] = [None] * 4
+        self._selected_row = 0
+        self._edit_mode = True
+        self._record: CalibrationRecord | None = None
+        self._camera_metadata: dict[str, Any] = {}
+        self._roi_metadata: dict[str, Any] | None = None
+        self._camera_thread: QThread | None = None
+        self._camera_worker: CameraWorker | None = None
+        self._image_thread: QThread | None = None
+        self._image_worker: ImageLoadWorker | None = None
+
+        self._build_ui()
+        self._select_row(0)
+
+    def _build_ui(self) -> None:
+        root = QVBoxLayout(self)
+        root.setContentsMargins(22, 18, 22, 18)
+        root.setSpacing(10)
+
+        eyebrow = QLabel("VISION  /  ROBOTICS  /  M2")
+        eyebrow.setObjectName("calibrationEyebrow")
+        title = QLabel("Camera to robot calibration")
+        title.setObjectName("calibrationTitle")
+        subtitle = QLabel(
+            "Freeze a full-frame image, select four corresponding points, fit a transform, and test clicks without moving the robot."
+        )
+        subtitle.setObjectName("calibrationSubtitle")
+        subtitle.setWordWrap(True)
+        root.addWidget(eyebrow)
+        root.addWidget(title)
+        root.addWidget(subtitle)
+
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.setChildrenCollapsible(False)
+        splitter.setObjectName("calibrationSplitter")
+        splitter.addWidget(self._build_source_panel())
+        splitter.addWidget(self._build_configuration_panel())
+        splitter.setStretchFactor(0, 3)
+        splitter.setStretchFactor(1, 2)
+        root.addWidget(splitter, 1)
+
+        self.setStyleSheet(
+            """
+            #calibrationPage { background: #f3f7fb; color: #172b4d; }
+            QLabel#calibrationEyebrow { color: #078b80; font-size: 12px; font-weight: 800; }
+            QLabel#calibrationTitle { color: #17304d; font-size: 28px; font-weight: 800; }
+            QLabel#calibrationSubtitle { color: #61748c; font-size: 13px; }
+            QFrame#calibrationCard { background: #ffffff; border: 1px solid #dce6ef; border-radius: 10px; }
+            QLabel#calibrationSection { color: #17304d; font-size: 17px; font-weight: 750; }
+            QLabel#calibrationHint { background: #fff6e5; color: #795214; border-radius: 8px; padding: 10px; }
+            QLabel#calibrationStatus { background: #e9f8f5; color: #14675f; border-radius: 8px; padding: 10px; }
+            QLabel#calibrationWarning { background: #fff0ed; color: #9f2d20; border-radius: 8px; padding: 10px; }
+            QLabel#calibrationResult { background: #087f75; color: white; border-radius: 10px; padding: 14px; font-size: 25px; font-weight: 800; }
+            QLabel#calibrationMatrixNote { color: #61748c; font-size: 12px; }
+            QPushButton { background: #f5f8fc; color: #254260; border: 1px solid #cfdeeb; border-radius: 7px; padding: 7px 10px; min-height: 30px; }
+            QPushButton:hover { background: #e7f3f7; border-color: #60bcb5; }
+            QPushButton#calibrationPrimary { background: #087f75; border-color: #087f75; color: white; font-weight: 800; }
+            QPushButton#pointButton:checked { background: #ddf6f1; border: 2px solid #0b9d91; color: #086c63; font-weight: 800; }
+            QRadioButton { background: #f5f8fc; color: #254260; border: 1px solid #cfdeeb; border-radius: 7px; padding: 7px 10px; }
+            QRadioButton:checked { background: #ddf6f1; border: 2px solid #0b9d91; color: #086c63; }
+            QDoubleSpinBox, QSpinBox { background: #ffffff; color: #17304d; border: 1px solid #cbd9e6; border-radius: 7px; padding: 5px 8px; min-height: 27px; }
+            QPlainTextEdit#calibrationMatrix { background: #f2f6fb; color: #17304d; border: 1px solid #d4e2ed; border-radius: 8px; padding: 9px; }
+            """
+        )
+
+    def _build_source_panel(self) -> QFrame:
+        panel = QFrame()
+        panel.setObjectName("calibrationCard")
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(16, 14, 16, 16)
+        layout.setSpacing(9)
+
+        heading = QLabel("01  Camera workspace")
+        heading.setObjectName("calibrationSection")
+        layout.addWidget(heading)
+
+        camera_row = QHBoxLayout()
+        camera_row.addWidget(QLabel("Camera index"))
+        self.camera_index = QSpinBox()
+        self.camera_index.setRange(0, 9)
+        self.camera_index.setValue(0)
+        camera_row.addWidget(self.camera_index)
+        self.start_button = QPushButton("Start camera")
+        self.start_button.setObjectName("calibrationPrimary")
+        self.start_button.clicked.connect(self._toggle_camera)
+        camera_row.addWidget(self.start_button)
+        camera_row.addStretch(1)
+        layout.addLayout(camera_row)
+
+        actions = QHBoxLayout()
+        self.freeze_button = QPushButton("Freeze frame")
+        self.freeze_button.clicked.connect(self._toggle_freeze)
+        self.freeze_button.setEnabled(False)
+        actions.addWidget(self.freeze_button)
+        open_button = QPushButton("Open saved image...")
+        open_button.clicked.connect(self._open_image)
+        actions.addWidget(open_button)
+        layout.addLayout(actions)
+
+        self.view = CalibrationImageView()
+        self.view.clicked.connect(self._image_clicked)
+        layout.addWidget(self.view, 1)
+
+        self.test_result = QLabel("ROBOT X: --     Y: --")
+        self.test_result.setObjectName("calibrationResult")
+        self.test_result.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.test_result.setMinimumHeight(70)
+        layout.addWidget(self.test_result)
+
+        self.status = QLabel(
+            "Choose a camera or saved image. Freeze the frame before selecting points."
+        )
+        self.status.setObjectName("calibrationStatus")
+        self.status.setWordWrap(True)
+        layout.addWidget(self.status)
+        return panel
+
+    def _build_configuration_panel(self) -> QScrollArea:
+        panel = QFrame()
+        panel.setObjectName("calibrationCard")
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(16, 14, 16, 16)
+        layout.setSpacing(8)
+
+        heading = QLabel("02  Calibrate the plane")
+        heading.setObjectName("calibrationSection")
+        layout.addWidget(heading)
+        hint = QLabel(
+            "Select a numbered row, click its marker in the image, and enter the matching robot X/Y. Hover the image for the 5x cursor magnifier."
+        )
+        hint.setObjectName("calibrationHint")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        table = QGridLayout()
+        table.setHorizontalSpacing(6)
+        table.setVerticalSpacing(5)
+        for column, label in enumerate(("POINT", "PIXEL U", "PIXEL V", "ROBOT X", "ROBOT Y")):
+            field = QLabel(label)
+            field.setStyleSheet("color: #61748c; font-size: 11px; font-weight: 750;")
+            table.addWidget(field, 0, column)
+        self._point_buttons: list[QPushButton] = []
+        self._pixel_labels: list[tuple[QLabel, QLabel]] = []
+        self._robot_fields: list[tuple[QDoubleSpinBox, QDoubleSpinBox]] = []
+        for row in range(4):
+            button = QPushButton(f"{row + 1:02d}")
+            button.setObjectName("pointButton")
+            button.setCheckable(True)
+            button.clicked.connect(lambda _checked, index=row: self._select_row(index))
+            self._point_buttons.append(button)
+            u_label, v_label = QLabel("--"), QLabel("--")
+            u_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            v_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self._pixel_labels.append((u_label, v_label))
+            x_box, y_box = _numeric_box(), _numeric_box()
+            x_box.valueChanged.connect(self._invalidate_fit)
+            y_box.valueChanged.connect(self._invalidate_fit)
+            self._robot_fields.append((x_box, y_box))
+            for column, widget in enumerate((button, u_label, v_label, x_box, y_box)):
+                table.addWidget(widget, row + 1, column)
+        layout.addLayout(table)
+
+        model_label = QLabel("MATRIX TYPE")
+        model_label.setStyleSheet("color: #61748c; font-size: 11px; font-weight: 750;")
+        layout.addWidget(model_label)
+        model_row = QHBoxLayout()
+        self.homography_choice = QRadioButton("3 x 3  Perspective")
+        self.affine_choice = QRadioButton("2 x 3  Affine")
+        self.model_group = QButtonGroup(self)
+        self.model_group.setExclusive(True)
+        self.model_group.addButton(self.homography_choice)
+        self.model_group.addButton(self.affine_choice)
+        self.homography_choice.setChecked(True)
+        self.homography_choice.toggled.connect(self._invalidate_fit)
+        self.affine_choice.toggled.connect(self._invalidate_fit)
+        model_row.addWidget(self.homography_choice)
+        model_row.addWidget(self.affine_choice)
+        layout.addLayout(model_row)
+
+        controls = QHBoxLayout()
+        calculate_button = QPushButton("Calculate matrix")
+        calculate_button.setObjectName("calibrationPrimary")
+        calculate_button.clicked.connect(self._calculate)
+        controls.addWidget(calculate_button)
+        clear_button = QPushButton("Clear points")
+        clear_button.clicked.connect(self._clear_points)
+        controls.addWidget(clear_button)
+        layout.addLayout(controls)
+
+        matrix_label = QLabel("CAMERA PIXEL -> ROBOT PLANE")
+        matrix_label.setStyleSheet("color: #61748c; font-size: 11px; font-weight: 750;")
+        layout.addWidget(matrix_label)
+        self.matrix_text = QPlainTextEdit()
+        self.matrix_text.setObjectName("calibrationMatrix")
+        self.matrix_text.setReadOnly(True)
+        self.matrix_text.setPlaceholderText("The matrix will appear here.")
+        self.matrix_text.setFont(QFont("Consolas", 15))
+        self.matrix_text.setMinimumHeight(105)
+        self.matrix_text.setMaximumHeight(120)
+        self.matrix_text.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        layout.addWidget(self.matrix_text)
+        matrix_note = QLabel(
+            "Displayed to 2 decimals; calculations and saved JSON retain full precision."
+        )
+        matrix_note.setObjectName("calibrationMatrixNote")
+        matrix_note.setWordWrap(True)
+        layout.addWidget(matrix_note)
+
+        actions = QHBoxLayout()
+        self.save_button = QPushButton("Save to workspace")
+        self.save_button.clicked.connect(self._save_calibration)
+        self.save_button.setEnabled(False)
+        actions.addWidget(self.save_button)
+        load_button = QPushButton("Load workspace calibration")
+        load_button.clicked.connect(self._load_calibration)
+        actions.addWidget(load_button)
+        layout.addLayout(actions)
+
+        self.geometry_warning = QLabel()
+        self.geometry_warning.setObjectName("calibrationWarning")
+        self.geometry_warning.setWordWrap(True)
+        self.geometry_warning.setVisible(False)
+        layout.addWidget(self.geometry_warning)
+        layout.addStretch(1)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidget(panel)
+        return scroll
+
+    def _set_status(self, message: str) -> None:
+        self.status.setText(message)
+        self.status_changed.emit(message)
+
+    def _toggle_camera(self) -> None:
+        if self._camera_thread is not None:
+            self._stop_camera()
+            return
+        self._source_mode = "camera"
+        self._frozen = False
+        self._clear_points()
+        self._current_image = QImage()
+        self.view.set_image(self._current_image)
+        self.freeze_button.setEnabled(False)
+        self.start_button.setText("Stop camera")
+        self._camera_thread = QThread(self)
+        self._camera_worker = CameraWorker(self.camera_index.value())
+        self._camera_worker.moveToThread(self._camera_thread)
+        self._camera_thread.started.connect(self._camera_worker.run)
+        self._camera_worker.frame_ready.connect(self._camera_frame_ready)
+        self._camera_worker.metadata_ready.connect(self._camera_metadata_ready)
+        self._camera_worker.error.connect(self._camera_error)
+        self._camera_worker.finished.connect(self._camera_thread.quit)
+        self._camera_worker.finished.connect(self._camera_worker.deleteLater)
+        self._camera_thread.finished.connect(self._camera_thread_finished)
+        self._camera_thread.finished.connect(self._camera_thread.deleteLater)
+        self._camera_thread.start()
+        self._set_status("Opening camera in a worker thread...")
+
+    def _stop_camera(self) -> None:
+        if self._camera_worker is not None:
+            self._camera_worker.stop()
+            self._set_status("Stopping camera...")
+
+    @Slot(object)
+    def _camera_frame_ready(self, rgb: Any) -> None:
+        if self._source_mode != "camera" or self._frozen:
+            return
+        self._set_current_image(_qimage_from_rgb(rgb))
+        self.freeze_button.setEnabled(True)
+
+    @Slot(object)
+    def _camera_metadata_ready(self, metadata: dict[str, Any]) -> None:
+        self._camera_metadata = dict(metadata)
+        self._set_status("Camera live. Freeze the image before selecting points.")
+
+    @Slot(str)
+    def _camera_error(self, message: str) -> None:
+        self._set_status(message)
+
+    @Slot()
+    def _camera_thread_finished(self) -> None:
+        self._camera_thread = None
+        self._camera_worker = None
+        self.start_button.setText("Start camera")
+        self.freeze_button.setEnabled(not self._current_image.isNull())
+
+    def _toggle_freeze(self) -> None:
+        if self._current_image.isNull():
+            self._set_status("Waiting for a camera frame or saved image.")
+            return
+        if self._source_mode != "camera":
+            self._frozen = True
+            return
+        self._frozen = not self._frozen
+        if self._frozen:
+            self._set_status("Frame frozen; select four corresponding points.")
+            self.freeze_button.setText("Resume live")
+        else:
+            self._clear_points()
+            self.freeze_button.setText("Freeze frame")
+            self._set_status("Camera live; freeze the frame before selecting points.")
+
+    def _open_image(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Open calibration image",
+            "",
+            "Images (*.png *.jpg *.jpeg *.bmp *.tif *.tiff)",
+        )
+        if not path:
+            return
+        self._source_mode = "saved_image"
+        self._frozen = True
+        self._stop_camera()
+        self._image_thread = QThread(self)
+        self._image_worker = ImageLoadWorker(Path(path))
+        self._image_worker.moveToThread(self._image_thread)
+        self._image_thread.started.connect(self._image_worker.run)
+        self._image_worker.image_ready.connect(self._image_ready)
+        self._image_worker.error.connect(self._image_error)
+        self._image_worker.finished.connect(self._image_thread.quit)
+        self._image_worker.finished.connect(self._image_worker.deleteLater)
+        self._image_thread.finished.connect(self._image_thread_finished)
+        self._image_thread.finished.connect(self._image_thread.deleteLater)
+        self._image_thread.start()
+        self._set_status("Loading saved image in a worker thread...")
+
+    @Slot(object, object)
+    def _image_ready(self, rgb: Any, metadata: dict[str, Any]) -> None:
+        self._source_mode = "saved_image"
+        self._frozen = True
+        self._camera_metadata = dict(metadata)
+        self._clear_points()
+        self._set_current_image(_qimage_from_rgb(rgb))
+        self.freeze_button.setEnabled(False)
+        self.freeze_button.setText("Frame frozen")
+        self._set_status("Saved image loaded; select four corresponding points.")
+
+    @Slot(str)
+    def _image_error(self, message: str) -> None:
+        self._set_status(message)
+
+    @Slot()
+    def _image_thread_finished(self) -> None:
+        self._image_thread = None
+        self._image_worker = None
+
+    def _set_current_image(self, image: QImage) -> None:
+        self._current_image = image
+        self.view.set_image(image)
+        self._update_geometry_warning()
+
+    def _select_row(self, index: int) -> None:
+        self._selected_row = index
+        self._edit_mode = True
+        for row, button in enumerate(self._point_buttons):
+            button.setChecked(row == index)
+        self._set_status(f"Editing point {index + 1}; click its position in the image.")
+
+    def _image_clicked(self, u: float, v: float) -> None:
+        if self._current_image.isNull() or not self._frozen:
+            self._set_status("Freeze a camera frame before selecting or testing points.")
+            return
+        if self._record is not None and not self._edit_mode:
+            try:
+                result = CalibrationService.apply(
+                    self._record,
+                    (u, v),
+                    (self._current_image.width(), self._current_image.height()),
+                )
+            except CalibrationError as error:
+                self._show_geometry_warning(str(error))
+                self._set_status(str(error))
+                return
+            self.view.test_point = (u, v)
+            self.view.update()
+            self.test_result.setText(
+                f"ROBOT X: {round(result[0])}     Y: {round(result[1])}"
+            )
+            self._set_status("Test prediction shown. No robot command was sent.")
+            return
+
+        self._points[self._selected_row] = (float(round(u)), float(round(v)))
+        self.view.set_points(self._points)
+        self._pixel_labels[self._selected_row][0].setText(str(round(u)))
+        self._pixel_labels[self._selected_row][1].setText(str(round(v)))
+        self._invalidate_fit()
+        next_row = next(
+            (index for index, point in enumerate(self._points) if point is None),
+            None,
+        )
+        if next_row is not None:
+            self._select_row(next_row)
+        else:
+            self._set_status("Four image points selected; enter robot X/Y and calculate.")
+
+    def _invalidate_fit(self, *_args: Any) -> None:
+        self._record = None
+        self._edit_mode = True
+        self.save_button.setEnabled(False)
+        self.matrix_text.clear()
+        self.test_result.setText("ROBOT X: --     Y: --")
+        self.view.test_point = None
+        self.view.update()
+
+    def _clear_points(self) -> None:
+        self._points = [None] * 4
+        self.view.set_points(self._points)
+        self.view.test_point = None
+        self._record = None
+        self._edit_mode = True
+        for row, (u_label, v_label) in enumerate(self._pixel_labels):
+            u_label.setText("--")
+            v_label.setText("--")
+            for field in self._robot_fields[row]:
+                field.blockSignals(True)
+                field.setValue(0.0)
+                field.blockSignals(False)
+        self.matrix_text.clear()
+        self.test_result.setText("ROBOT X: --     Y: --")
+        self.save_button.setEnabled(False)
+
+    def _calculate(self) -> None:
+        if self._current_image.isNull() or not self._frozen:
+            self._set_status("Freeze a camera frame or open a saved image first.")
+            return
+        if any(point is None for point in self._points):
+            self._set_status("Select all four image points first.")
+            return
+        robot_points = [
+            (x.value(), y.value()) for x, y in self._robot_fields
+        ]
+        transform: TransformType = (
+            "homography" if self.homography_choice.isChecked() else "affine"
+        )
+        try:
+            self._record = CalibrationService.fit(
+                transform,
+                [point for point in self._points if point is not None],
+                robot_points,
+                (self._current_image.width(), self._current_image.height()),
+                camera_metadata=self._camera_metadata,
+                roi=self._roi_metadata,
+            )
+        except CalibrationError as error:
+            self._set_status(str(error))
+            return
+        self.matrix_text.setPlainText(_format_matrix(self._record.matrix))
+        self._edit_mode = False
+        for button in self._point_buttons:
+            button.setChecked(False)
+        self.save_button.setEnabled(True)
+        self._update_geometry_warning()
+        self._set_status("Matrix ready. Click the image to test a robot X/Y prediction.")
+
+    def _snapshot_png(self) -> bytes | None:
+        if self._current_image.isNull():
+            return None
+        buffer = QBuffer()
+        buffer.open(QIODevice.OpenModeFlag.WriteOnly)
+        if not self._current_image.save(buffer, "PNG"):
+            return None
+        return bytes(buffer.data())
+
+    def _calibration_path(self) -> Path:
+        return self.workspace.resolve_inside("calibration", "calibration.json")
+
+    def _save_calibration(self) -> None:
+        if self._record is None:
+            self._set_status("Calculate a matrix before saving.")
+            return
+        try:
+            record = replace(
+                self._record,
+                snapshot_png=self._snapshot_png(),
+                camera_metadata=dict(self._camera_metadata),
+                roi=dict(self._roi_metadata) if self._roi_metadata is not None else None,
+            )
+            path = self._calibration_path()
+            CalibrationService.save(path, record)
+            self._record = record
+            self.workspace.record_event(
+                "calibration.saved",
+                {
+                    "path": str(path.relative_to(self.workspace.root)),
+                    "transform": record.transform,
+                    "image_size": list(record.image_size),
+                },
+            )
+            self._set_status(f"Saved active calibration to {path}.")
+        except (OSError, CalibrationError, ValueError) as error:
+            self._set_status(f"Could not save calibration: {error}")
+
+    def _load_calibration(self) -> None:
+        path = self._calibration_path()
+        if not path.exists():
+            self._set_status(f"No workspace calibration found at {path}.")
+            return
+        try:
+            record = CalibrationService.load(path)
+        except (OSError, KeyError, TypeError, ValueError, binascii.Error) as error:
+            self._set_status(f"Could not load calibration: {error}")
+            return
+
+        if self._current_image.isNull() and record.snapshot_png is not None:
+            snapshot = QImage.fromData(record.snapshot_png, "PNG")
+            if not snapshot.isNull():
+                self._source_mode = "saved_calibration"
+                self._frozen = True
+                self._set_current_image(snapshot)
+                self.freeze_button.setEnabled(False)
+                self.freeze_button.setText("Frame frozen")
+        self.homography_choice.blockSignals(True)
+        self.affine_choice.blockSignals(True)
+        self.homography_choice.setChecked(record.transform == "homography")
+        self.affine_choice.setChecked(record.transform == "affine")
+        self.homography_choice.blockSignals(False)
+        self.affine_choice.blockSignals(False)
+        self._record = record
+        self._points = [tuple(point) for point in record.camera_points_uv]
+        self.view.set_points(self._points)
+        for row, ((u, v), (x, y)) in enumerate(
+            zip(record.camera_points_uv, record.robot_points_xy)
+        ):
+            self._pixel_labels[row][0].setText(str(round(u)))
+            self._pixel_labels[row][1].setText(str(round(v)))
+            for field, value in zip(self._robot_fields[row], (x, y)):
+                field.blockSignals(True)
+                field.setValue(float(value))
+                field.blockSignals(False)
+        self.matrix_text.setPlainText(_format_matrix(record.matrix))
+        self._camera_metadata = dict(record.camera_metadata or {})
+        self._roi_metadata = dict(record.roi) if record.roi is not None else None
+        self._edit_mode = False
+        self.save_button.setEnabled(True)
+        self._update_geometry_warning()
+        self._set_status(
+            f"Loaded schema {record.source_schema_version} calibration. "
+            "Click the image to test only when geometry matches."
+        )
+
+    def _update_geometry_warning(self) -> None:
+        if self._record is None:
+            self.geometry_warning.setVisible(False)
+            return
+        if self._current_image.isNull():
+            self._show_geometry_warning(
+                "Calibration loaded without a current image. Load a matching image before testing."
+            )
+            return
+        try:
+            CalibrationService.validate_geometry(
+                self._record,
+                (self._current_image.width(), self._current_image.height()),
+            )
+        except CalibrationGeometryMismatchError as error:
+            self._show_geometry_warning(str(error))
+        else:
+            self.geometry_warning.clear()
+            self.geometry_warning.setVisible(False)
+
+    def _show_geometry_warning(self, message: str) -> None:
+        self.geometry_warning.setText(message)
+        self.geometry_warning.setVisible(True)
+
+    def shutdown(self) -> None:
+        self._stop_camera()
+        if self._camera_thread is not None:
+            self._camera_thread.quit()
+            self._camera_thread.wait(1500)
+        if self._image_thread is not None:
+            self._image_thread.quit()
+            self._image_thread.wait(1500)
