@@ -2,7 +2,7 @@
 
 AI Engineering date-fruit training and assessment workstation. M1 provides a PySide6 desktop shell with navigation across the planned application pages, a candidate workspace, append-only local event logs, and idempotent server-receipt acknowledgement storage. M2 adds an embedded four-point camera-to-robot calibration workspace. M3 adds Dataset Studio for read-only YOLO dataset inspection, four-class subset export, and printable object exports. M4 adds an embedded Vision Studio for camera preview, ROI processing, local YOLO inference, and full-frame detection centers.
 
-The M1-M4 shell does not connect to an organizer server yet. Local events remain pending until a future organizer integration records a server acknowledgement. Calibration is a 2D planar mapping tool only and Vision Studio never sends robot commands or performs automatic sorting. Dataset Studio does not train YOLO.
+The M1-M5 shell does not connect to an organizer server yet. Local events remain pending until a future organizer integration records a server acknowledgement. Calibration is a 2D planar mapping tool only, Vision Studio never sends robot commands or performs automatic sorting, Dataset Studio does not train YOLO, and Robot Studio does not sort live detections.
 
 Read [Architecture v1](docs/ARCHITECTURE_V1.md) and [AGENTS.md](AGENTS.md) for the project boundaries and acceptance gates.
 
@@ -70,7 +70,7 @@ The GUI extra installs the required M3 dependencies, including PyYAML and Report
 python -m pip install -e ".[gui]"
 ```
 
-The full M1-M4 test suite remains:
+The full M1-M5 test suite remains:
 
 ```bat
 python -m unittest discover -s tests -v
@@ -85,3 +85,19 @@ Vision Studio shows the untouched full-frame camera image beside the corrected R
 Detection rows contain class ID/name, confidence, full-frame bounding box, full-frame center pixels, frame ID, and optional robot X/Y. A saved M2 calibration is used only when its full-frame geometry matches the current frame; a mismatch is shown as a warning. A class ID is never treated as a robot position. **Save snapshot** writes the raw frame, annotated processed image, and metadata under `candidate_workspaces\C014\exports\vision\`. The active camera profile is persisted at `candidate_workspaces\C014\camera\vision_profile.json`.
 
 Calibration and Vision share a camera ownership guard, so starting one module while the other has the webcam reports which module must be stopped first. Vision logs camera start/stop, model load, ROI changes, and snapshots without logging every frame.
+
+## M5 Robot Studio
+
+Open **Robot** in the sidebar. The page starts the preserved MaxArm simulator on a loopback port and uses the same HTTP contract as a physical MaxArm: `GET /health`, `/health/deep`, `/positions`, `/suction`, and `POST /command`. The simulator is also reachable by external Python clients while the application is open:
+
+```bat
+python -c "import requests; print(requests.post('http://127.0.0.1:PORT/command', json={'command':'suction','state':'on'}).json())"
+```
+
+Replace `PORT` with the port shown in the Robot page base URL. The default bind is local-only. **Expose simulator on LAN** is an explicit opt-in and restarts the simulator on `0.0.0.0`; use it only on a trusted network.
+
+Robot Studio provides non-overlapping manual P1-P5 high/low moves, duration, suction, health, and positions controls. It displays the simulator current and target XYZ pose, animated progress, suction state, virtual objects, and command history. Simulator-only XYZ moves are bounds-checked. Physical MaxArm mode exposes only the documented position and suction contract, starts disarmed, requires a health/positions check and explicit session enable, and does not expose XYZ or software stop controls. The physical emergency-stop and power-isolation procedure remains outside the application.
+
+The supervised trial uses the clearance route `source high -> source low -> suction on -> source high -> destination high -> destination low -> suction off -> destination high`. It serializes commands, waits for motion and release settling, handles busy/HTTP/timeout failures without blind retries, and reports an accepted-but-unconfirmed command as uncertain. Cancellation prevents later commands but never claims to stop a move already accepted by the controller. Four class names are loaded from the latest M3 subset manifest and mapped to destinations for trial selection; live Vision detections are not connected to robot movement in M5.
+
+Robot commands, responses, state changes, errors, and trials are written to the candidate event log. Simulator state is available at `/sim/state`; the preserved prototype reset endpoints remain simulator-only. M5 tests include the external `requests.post(.../command)` path, position parity, busy handling, sequence order, timeout uncertainty, cancellation, and simulator-only XYZ capability. A physical MaxArm and supervised Windows hardware trial are still required before enabling real motion in production.

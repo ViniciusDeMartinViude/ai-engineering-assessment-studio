@@ -96,6 +96,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         from .modules.calibration import CalibrationPage
         from .modules.dataset import DatasetPage
+        from .modules.robot import RobotPage
         from .modules.vision import VisionPage
     except ImportError as exc:
         print(
@@ -180,6 +181,7 @@ def main(argv: list[str] | None = None) -> int:
             self.calibration_page = None
             self.dataset_page = None
             self.vision_page = None
+            self.robot_page = None
             for page in PAGES:
                 if page.title == "Calibration":
                     self.calibration_page = CalibrationPage(workspace)
@@ -190,6 +192,9 @@ def main(argv: list[str] | None = None) -> int:
                 elif page.title == "Vision":
                     self.vision_page = VisionPage(workspace)
                     self.stack.addWidget(self.vision_page)
+                elif page.title == "Robot":
+                    self.robot_page = RobotPage(workspace)
+                    self.stack.addWidget(self.robot_page)
                 else:
                     self.stack.addWidget(Page(page))
             self.nav.currentRowChanged.connect(self.stack.setCurrentIndex)
@@ -212,6 +217,8 @@ def main(argv: list[str] | None = None) -> int:
                 self.dataset_page.shutdown()
             if self.vision_page is not None:
                 self.vision_page.shutdown()
+            if self.robot_page is not None:
+                self.robot_page.shutdown()
 
     app = QApplication([sys.argv[0]])
     app.setStyleSheet(

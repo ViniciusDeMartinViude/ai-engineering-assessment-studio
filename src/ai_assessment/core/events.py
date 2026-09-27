@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
@@ -76,6 +77,7 @@ class EventLog:
     def __init__(self, event_path: Path, acknowledgement_path: Path) -> None:
         self.event_path = event_path
         self.acknowledgement_path = acknowledgement_path
+        self._lock = threading.RLock()
         self.event_path.parent.mkdir(parents=True, exist_ok=True)
         self.acknowledgement_path.parent.mkdir(parents=True, exist_ok=True)
         self.event_path.touch(exist_ok=True)
@@ -94,18 +96,19 @@ class EventLog:
         outcome: str = "recorded",
         artifact_hashes: dict[str, str] | None = None,
     ) -> EventEnvelope:
-        event = EventEnvelope(
-            event_type=event_type,
-            candidate_id=candidate_id,
-            session_id=session_id,
-            sequence=self.next_sequence(),
-            payload=payload or {},
-            outcome=outcome,
-            artifact_hashes=artifact_hashes or {},
-        )
-        with self.event_path.open("a", encoding="utf-8") as handle:
-            handle.write(event.to_json_line() + "\n")
-        return event
+        with self._lock:
+            event = EventEnvelope(
+                event_type=event_type,
+                candidate_id=candidate_id,
+                session_id=session_id,
+                sequence=self.next_sequence(),
+                payload=payload or {},
+                outcome=outcome,
+                artifact_hashes=artifact_hashes or {},
+            )
+            with self.event_path.open("a", encoding="utf-8") as handle:
+                handle.write(event.to_json_line() + "\n")
+            return event
 
     def acknowledge(
         self,
@@ -114,22 +117,23 @@ class EventLog:
         receipt_id: str,
         server_timestamp: str | None = None,
     ) -> EventAcknowledgement:
-        existing = self.read_acknowledgements().get(event_id)
-        if existing is not None:
-            return existing
+        with self._lock:
+            existing = self.read_acknowledgements().get(event_id)
+            if existing is not None:
+                return existing
 
-        event_ids = {event.event_id for event in self.read_events()}
-        if event_id not in event_ids:
-            raise KeyError(f"Cannot acknowledge unknown event: {event_id}")
+            event_ids = {event.event_id for event in self.read_events()}
+            if event_id not in event_ids:
+                raise KeyError(f"Cannot acknowledge unknown event: {event_id}")
 
-        acknowledgement = EventAcknowledgement(
-            event_id=event_id,
-            receipt_id=receipt_id,
-            server_timestamp=server_timestamp,
-        )
-        with self.acknowledgement_path.open("a", encoding="utf-8") as handle:
-            handle.write(acknowledgement.to_json_line() + "\n")
-        return acknowledgement
+            acknowledgement = EventAcknowledgement(
+                event_id=event_id,
+                receipt_id=receipt_id,
+                server_timestamp=server_timestamp,
+            )
+            with self.acknowledgement_path.open("a", encoding="utf-8") as handle:
+                handle.write(acknowledgement.to_json_line() + "\n")
+            return acknowledgement
 
     def read_events(self) -> list[EventEnvelope]:
         return [
