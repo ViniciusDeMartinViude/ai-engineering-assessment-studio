@@ -1,8 +1,8 @@
 # AI Engineering Assessment Studio
 
-AI Engineering date-fruit training and assessment workstation. M1 provides a PySide6 desktop shell with navigation across the planned application pages, a candidate workspace, append-only local event logs, and idempotent server-receipt acknowledgement storage. M2 adds an embedded four-point camera-to-robot calibration workspace. M3 adds Dataset Studio for read-only YOLO dataset inspection, four-class subset export, and printable object exports. M4 adds an embedded Vision Studio for camera preview, ROI processing, local YOLO inference, and full-frame detection centers.
+AI Engineering date-fruit training and assessment workstation. M1 provides a PySide6 desktop shell with navigation across the planned application pages, a candidate workspace, append-only local event logs, and idempotent server-receipt acknowledgement storage. M2 adds an embedded four-point camera-to-robot calibration workspace. M3 adds Dataset Studio for read-only YOLO dataset inspection, four-class subset export, and printable object exports. M4 adds an embedded Vision Studio for camera preview, ROI processing, local YOLO inference, and full-frame detection centers. M5 adds supervised Robot Studio. M6 adds recorded YOLO training experiments and candidate-visible Results Studio.
 
-The M1-M5 shell does not connect to an organizer server yet. Local events remain pending until a future organizer integration records a server acknowledgement. Calibration is a 2D planar mapping tool only, Vision Studio never sends robot commands or performs automatic sorting, Dataset Studio does not train YOLO, and Robot Studio does not sort live detections.
+The M1-M6 shell does not connect to an organizer server yet. Local events remain pending until a future organizer integration records a server acknowledgement. Calibration is a 2D planar mapping tool only, Vision Studio never sends robot commands or performs automatic sorting, Dataset Studio does not train YOLO, Robot Studio does not sort live detections, and Results Studio does not show hidden organizer scores.
 
 Read [Architecture v1](docs/ARCHITECTURE_V1.md) and [AGENTS.md](AGENTS.md) for the project boundaries and acceptance gates.
 
@@ -35,7 +35,7 @@ Run the non-GUI workspace check:
 python -m ai_assessment --headless-check --workspace candidate_workspaces\C014
 ```
 
-Run the full M1-M4 tests:
+Run the full M1-M6 tests:
 
 ```bat
 python -m unittest discover -s tests -v
@@ -70,7 +70,7 @@ The GUI extra installs the required M3 dependencies, including PyYAML and Report
 python -m pip install -e ".[gui]"
 ```
 
-The full M1-M5 test suite remains:
+The full M1-M6 test suite remains:
 
 ```bat
 python -m unittest discover -s tests -v
@@ -101,3 +101,28 @@ Robot Studio provides non-overlapping manual P1-P5 high/low moves, duration, suc
 The supervised trial uses the clearance route `source high -> source low -> suction on -> source high -> destination high -> destination low -> suction off -> destination high`. It serializes commands, waits for motion and release settling, handles busy/HTTP/timeout failures without blind retries, and reports an accepted-but-unconfirmed command as uncertain. Cancellation prevents later commands but never claims to stop a move already accepted by the controller. Four class names are loaded from the latest M3 subset manifest and mapped to destinations for trial selection; live Vision detections are not connected to robot movement in M5.
 
 Robot commands, responses, state changes, errors, and trials are written to the candidate event log. Simulator state is available at `/sim/state`; the preserved prototype reset endpoints remain simulator-only. M5 tests include the external `requests.post(.../command)` path, position parity, busy handling, sequence order, timeout uncertainty, cancellation, and simulator-only XYZ capability. A physical MaxArm and supervised Windows hardware trial are still required before enabling real motion in production.
+
+## M6 Training and Results
+
+Open **Training** in the sidebar after exporting an M3 subset. Select a `dataset/subset-*/` folder and an existing local `.pt` base-weight file. Training never downloads weights, changes the source dataset, or uses hidden assessment data. The service validates the complete four-class manifest, `train`, `val`, and `test` paths, and the contiguous class mapping before launching a child process. The child runs Ultralytics `train` and candidate-visible `val`; the preserved `test` split is not used by M6.
+
+Prepare offline weights before the event by placing an approved `.pt` file on the Windows image or inside the candidate workspace `models` folder. The app only accepts a file that already exists. A GPU is optional for a smoke test; choose `cpu` in **Device** when appropriate, expect training to be slow, and install the CUDA-matched PyTorch build separately on an official GPU image. No model weights, dataset, workspace, or generated run output belongs in Git.
+
+Training records at most four distinct configurations per workspace. Each run keeps its ID, slot, parameters, seed, manifest and base-weight hashes, environment/package versions, process arguments, timestamps, status, logs, metrics, and checkpoint hashes under `models/`, `results/training/`, and `logs/training/`. Failed and cancelled runs remain visible and do not become completed experiments. Cancellation releases the Windows child process tree; a resumed run is not silently counted as a new experiment.
+
+Use **Results** to compare candidate-visible mAP50, mAP50-95, precision, recall, available per-class metrics, loss-curve rows, confusion-matrix artifacts, and latency. Values that were not produced are shown as `unavailable`. Select a completed `best.pt` to write `results/selected_model.json` with the exact SHA-256; Vision can load that local path through its existing model interface. Selection is a local candidate choice, not an organizer signature, lock, or hidden score.
+
+For a short local smoke test, use a tiny four-class YOLO fixture and a local fake or approved `.pt` file, then run:
+
+```bat
+python -m unittest discover -s tests -p "test_m6*.py" -v
+python -m ai_assessment --headless-check --workspace candidate_workspaces\C014
+```
+
+The complete suite remains:
+
+```bat
+python -m unittest discover -s tests -v
+```
+
+A real Windows GPU run is still required to verify Ultralytics, CUDA/PyTorch compatibility, training duration, checkpoint production, and metric plots on the official image.

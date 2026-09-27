@@ -1,0 +1,205 @@
+from __future__ import annotations
+
+import json
+import tempfile
+import threading
+import time
+import unittest
+from pathlib import Path
+
+from ai_assessment.core.workspace import CandidateWorkspace
+from ai_assessment.services.training import (
+    TrainingConfig,
+    TrainingError,
+    TrainingService,
+    parse_metrics,
+    sha256_file,
+    validate_subset,
+)
+
+
+class FakeStream:
+    def __init__(self, lines: list[str], release: threading.Event | None = None) -> None:
+        self.lines = lines
+        self.release = release
+
+    def __iter__(self):
+        for line in self.lines:
+            yield line
+        if self.release is not None:
+            self.release.wait(2)
+
+
+class FakeProcess:
+    def __init__(self, args: list[str], return_code: int = 0, block: bool = False) -> None:
+        self.args = args
+        self.pid = 4242
+        self.return_code = return_code
+        self.terminated = False
+        self.release = threading.Event() if block else None
+        self.stdout = FakeStream(["Epoch 1/2", "Epoch 2/2"], self.release)
+
+        if block:
+            self.stdout = FakeStream([], self.release)
+
+    def poll(self) -> int | None:
+        return self.return_code if self.terminated or self.release is None else None
+
+    def wait(self) -> int:
+        if self.release is not None:
+            self.release.wait(2)
+        return 1 if self.terminated else self.return_code
+
+    def terminate(self) -> None:
+        self.terminated = True
+        if self.release is not None:
+            self.release.set()
+
+    def kill(self) -> None:
+        self.terminate()
+
+
+class M6TrainingTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.workspace = CandidateWorkspace.create(Path(self.temp_dir.name) / "C014", candidate_id="C014")
+        self.subset = self.workspace.root / "dataset" / "subset-test"
+        for split in ("train", "valid", "test"):
+            (self.subset / split / "images").mkdir(parents=True)
+            (self.subset / split / "labels").mkdir(parents=True)
+        (self.subset / "data.yaml").write_text(
+            "path: .\ntrain: train/images\nval: valid/images\ntest: test/images\nnc: 4\nnames: [Ajwa, Galaxy, Medjool, Meneifi]\n",
+            encoding="utf-8",
+        )
+        (self.subset / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "m3.dataset.v1",
+                    "status": "complete",
+                    "selected_order": [4, 8, 9, 12],
+                    "selected_class_mapping": {
+                        "4": {"new_id": 0, "name": "Ajwa"},
+                        "8": {"new_id": 1, "name": "Galaxy"},
+                        "9": {"new_id": 2, "name": "Medjool"},
+                        "12": {"new_id": 3, "name": "Meneifi"},
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.weights = Path(self.temp_dir.name) / "base.pt"
+        self.weights.write_bytes(b"local test weights")
+        self.processes: list[FakeProcess] = []
+
+    def tearDown(self) -> None:
+        self.temp_dir.cleanup()
+
+    def factory(self, **kwargs) -> FakeProcess:
+        args = list(kwargs["args"])
+        process = FakeProcess(args)
+        project = Path(args[args.index("--project") + 1])
+        name = args[args.index("--name") + 1]
+        result_json = Path(args[args.index("--result-json") + 1])
+        (project / name / "weights").mkdir(parents=True, exist_ok=True)
+        (project / name / "weights" / "best.pt").write_bytes(b"best checkpoint")
+        result_json.parent.mkdir(parents=True, exist_ok=True)
+        result_json.write_text(
+            json.dumps(
+                {
+                    "metrics": {
+                        "metrics/mAP50(B)": 0.91,
+                        "metrics/mAP50-95(B)": 0.73,
+                        "metrics/precision(B)": 0.88,
+                        "metrics/recall(B)": 0.86,
+                    },
+                    "per_class": [{"class_name": "Ajwa", "map50": 0.9}],
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.processes.append(process)
+        return process
+
+    def wait_for_completion(self, service: TrainingService) -> None:
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline and service.active_run_id is not None:
+            time.sleep(0.01)
+        self.assertIsNone(service.active_run_id)
+
+    def test_subset_validation_and_weight_requirements(self) -> None:
+        validated = validate_subset(self.workspace, self.subset)
+        self.assertEqual(validated.class_names, ("Ajwa", "Galaxy", "Medjool", "Meneifi"))
+        with self.assertRaises(TrainingError):
+            validate_subset(self.workspace, Path(self.temp_dir.name) / "outside")
+        with self.assertRaises(TrainingError):
+            TrainingService(self.workspace).start_training(
+                self.subset,
+                Path(self.temp_dir.name) / "wrong.onnx",
+                TrainingConfig(1),
+            )
+
+    def test_distinct_run_records_include_hashes_metrics_and_arguments(self) -> None:
+        service = TrainingService(self.workspace, process_factory=self.factory)
+        first = service.start_training(self.subset, self.weights, TrainingConfig(1, epochs=2))
+        self.wait_for_completion(service)
+        record = service.load_run(first.run_id)
+        self.assertEqual(record["status"], "completed")
+        self.assertEqual(record["metrics"]["map50"], 0.91)
+        self.assertEqual(record["base_weights"]["sha256"], sha256_file(self.weights))
+        self.assertIn("--data", record["process_args"])
+        self.assertNotIn("--split", record["process_args"])
+        with self.assertRaises(TrainingError):
+            service.start_training(self.subset, self.weights, TrainingConfig(1, epochs=2))
+        second = service.start_training(self.subset, self.weights, TrainingConfig(2, epochs=3, seed=5))
+        self.wait_for_completion(service)
+        self.assertEqual(service.load_run(second.run_id)["status"], "completed")
+
+    def test_failed_process_retains_failed_record(self) -> None:
+        def failed_factory(**kwargs) -> FakeProcess:
+            process = FakeProcess(list(kwargs["args"]), return_code=7)
+            self.processes.append(process)
+            return process
+
+        service = TrainingService(self.workspace, process_factory=failed_factory)
+        run = service.start_training(self.subset, self.weights, TrainingConfig(1))
+        self.wait_for_completion(service)
+        record = service.load_run(run.run_id)
+        self.assertEqual(record["status"], "failed")
+        self.assertTrue(record["error"])
+        self.assertTrue(run.log_path.is_file())
+
+    def test_cancellation_retains_cancelled_record(self) -> None:
+        def blocking_factory(**kwargs) -> FakeProcess:
+            args = list(kwargs["args"])
+            process = FakeProcess(args, block=True)
+            self.processes.append(process)
+            return process
+
+        service = TrainingService(self.workspace, process_factory=blocking_factory)
+        run = service.start_training(self.subset, self.weights, TrainingConfig(1))
+        time.sleep(0.05)
+        self.assertTrue(service.cancel_active(run.run_id))
+        self.wait_for_completion(service)
+        self.assertEqual(service.load_run(run.run_id)["status"], "cancelled")
+
+    def test_missing_metrics_are_unavailable_and_selection_records_exact_hash(self) -> None:
+        result_dir = Path(self.temp_dir.name) / "metrics"
+        result_dir.mkdir()
+        summary = parse_metrics(result_dir, None)
+        self.assertIsNone(summary.map50)
+        service = TrainingService(self.workspace, process_factory=self.factory)
+        run = service.start_training(self.subset, self.weights, TrainingConfig(1))
+        self.wait_for_completion(service)
+        selected = service.select_production_model(run.run_id)
+        selection = json.loads((self.workspace.root / "results" / "selected_model.json").read_text(encoding="utf-8"))
+        self.assertEqual(selection["run_id"], run.run_id)
+        self.assertEqual(selection["sha256"], sha256_file(selected))
+        self.assertTrue(any(event.event_type == "training.model.selected" for event in self.workspace.events.read_events()))
+
+    def test_selection_rejects_checkpoint_outside_workspace(self) -> None:
+        service = TrainingService(self.workspace, process_factory=self.factory)
+        run = service.start_training(self.subset, self.weights, TrainingConfig(1))
+        self.wait_for_completion(service)
+        with self.assertRaises(TrainingError):
+            service.select_production_model(run.run_id, self.weights)
+

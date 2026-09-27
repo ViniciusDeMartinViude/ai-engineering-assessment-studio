@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -401,7 +402,19 @@ class VisionPage(QWidget):
         if profile.model_path and Path(profile.model_path).is_file():
             self.model_path.setText(profile.model_path)
         else:
-            for candidate in (Path.cwd() / "yolo26n.pt", self.workspace.root / "models" / "yolo26n.pt"):
+            selected_candidate: Path | None = None
+            selection_path = self.workspace.resolve_inside("results", "selected_model.json")
+            if selection_path.is_file():
+                try:
+                    selection = json.loads(selection_path.read_text(encoding="utf-8"))
+                    if isinstance(selection, dict):
+                        selected_candidate = self.workspace.resolve_inside(selection.get("path", ""))
+                except (OSError, TypeError, ValueError):
+                    selected_candidate = None
+            candidates = ([selected_candidate] if selected_candidate else []) + [Path.cwd() / "yolo26n.pt", self.workspace.root / "models" / "yolo26n.pt"]
+            for candidate in candidates:
+                if candidate is None:
+                    continue
                 if candidate.is_file():
                     self.model_path.setText(str(candidate.resolve()))
                     break
