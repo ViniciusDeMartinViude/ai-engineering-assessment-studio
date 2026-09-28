@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..core.workspace import CandidateWorkspace
+from ..services.ai_context import AIContextBuffer
 from ..services.execution import (
     ExecutionError,
     ExecutionResult,
@@ -115,9 +116,10 @@ class _Signals(QObject):
 
 
 class IDEPage(QWidget):
-    def __init__(self, workspace: CandidateWorkspace) -> None:
+    def __init__(self, workspace: CandidateWorkspace, context_buffer: AIContextBuffer | None = None) -> None:
         super().__init__()
         self.workspace = workspace
+        self.context_buffer = context_buffer or AIContextBuffer()
         self.execution = ExecutionService(workspace)
         self.terminal = TerminalService(workspace)
         self.signals = _Signals()
@@ -195,6 +197,10 @@ class IDEPage(QWidget):
             button = QPushButton(label)
             button.clicked.connect(handler)
             toolbar.addWidget(button)
+        attach = QPushButton("Attach selection")
+        attach.setToolTip("Make the selected editor text available to AI Assistant for deliberate attachment")
+        attach.clicked.connect(self._attach_selection)
+        toolbar.addWidget(attach)
         toolbar.addWidget(QLabel("Arguments:"))
         self.arguments = QLineEdit()
         self.arguments.setPlaceholderText("optional arguments, parsed into an argument array")
@@ -401,6 +407,18 @@ class IDEPage(QWidget):
             self._show_error(str(exc))
             return
         self.execution_status.setText(f"Running {run_id}")
+
+    def _attach_selection(self) -> None:
+        editor = self._current_editor()
+        if editor is None:
+            self.execution_status.setText("Open an editor tab first")
+            return
+        text = editor.textCursor().selectedText()
+        if not text:
+            self.execution_status.setText("Select text before attaching it")
+            return
+        self.context_buffer.set("selected_text", text, "IDE selection")
+        self.execution_status.setText(f"Attached {len(text)} characters for AI Assistant")
 
     def _stop(self) -> None:
         if not self.execution.stop():

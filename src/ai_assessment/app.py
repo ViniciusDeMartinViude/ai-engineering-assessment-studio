@@ -96,11 +96,13 @@ def main(argv: list[str] | None = None) -> int:
         )
         from .modules.calibration import CalibrationPage
         from .modules.dataset import DatasetPage
+        from .modules.ai_assistant import AIAssistantPage
         from .modules.ide import IDEPage
         from .modules.robot import RobotPage
         from .modules.results import ResultsPage
         from .modules.training import TrainingPage
         from .modules.vision import VisionPage
+        from .services.ai_context import AIContextBuffer
     except ImportError as exc:
         print(
             "PySide6, NumPy, OpenCV, and PyYAML are required to launch the desktop shell. "
@@ -188,6 +190,8 @@ def main(argv: list[str] | None = None) -> int:
             self.training_page = None
             self.results_page = None
             self.ide_page = None
+            self.ai_page = None
+            context_buffer = AIContextBuffer()
             for page in PAGES:
                 if page.title == "Calibration":
                     self.calibration_page = CalibrationPage(workspace)
@@ -208,8 +212,11 @@ def main(argv: list[str] | None = None) -> int:
                     self.results_page = ResultsPage(workspace)
                     self.stack.addWidget(self.results_page)
                 elif page.title == "IDE":
-                    self.ide_page = IDEPage(workspace)
+                    self.ide_page = IDEPage(workspace, context_buffer)
                     self.stack.addWidget(self.ide_page)
+                elif page.title == "AI Assistant":
+                    self.ai_page = AIAssistantPage(workspace, context_buffer)
+                    self.stack.addWidget(self.ai_page)
                 else:
                     self.stack.addWidget(Page(page))
             self.nav.currentRowChanged.connect(self.stack.setCurrentIndex)
@@ -240,6 +247,8 @@ def main(argv: list[str] | None = None) -> int:
                 self.results_page.shutdown()
             if self.ide_page is not None:
                 self.ide_page.shutdown()
+            if self.ai_page is not None:
+                self.ai_page.shutdown()
 
     app = QApplication([sys.argv[0]])
     app.setStyleSheet(

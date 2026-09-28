@@ -1,8 +1,8 @@
 # AI Engineering Assessment Studio
 
-AI Engineering date-fruit training and assessment workstation. M1 provides a PySide6 desktop shell with navigation across the planned application pages, a candidate workspace, append-only local event logs, and idempotent server-receipt acknowledgement storage. M2 adds an embedded four-point camera-to-robot calibration workspace. M3 adds Dataset Studio for read-only YOLO dataset inspection, four-class subset export, and printable object exports. M4 adds an embedded Vision Studio for camera preview, ROI processing, local YOLO inference, and full-frame detection centers. M5 adds supervised Robot Studio. M6 adds recorded YOLO training experiments and candidate-visible Results Studio. M7 adds a workspace-owned Python IDE and a process-backed terminal.
+AI Engineering date-fruit training and assessment workstation. M1 provides a PySide6 desktop shell with navigation across the planned application pages, a candidate workspace, append-only local event logs, and idempotent server-receipt acknowledgement storage. M2 adds an embedded four-point camera-to-robot calibration workspace. M3 adds Dataset Studio for read-only YOLO dataset inspection, four-class subset export, and printable object exports. M4 adds an embedded Vision Studio for camera preview, ROI processing, local YOLO inference, and full-frame detection centers. M5 adds supervised Robot Studio. M6 adds recorded YOLO training experiments and candidate-visible Results Studio. M7 adds a workspace-owned Python IDE and a process-backed terminal. M8 adds a separate organizer AI gateway and selected-context assistant page.
 
-The M1-M7 shell does not connect to an organizer server yet. Local events remain pending until a future organizer integration records a server acknowledgement. Calibration is a 2D planar mapping tool only, Vision Studio never sends robot commands or performs automatic sorting, Dataset Studio does not train YOLO, Robot Studio does not sort live detections, Results Studio does not show hidden organizer scores, and the IDE never arms the physical robot.
+The M1-M8 shell does not connect to a competition organizer server by default. Local events remain pending until a future organizer integration records a server acknowledgement. Calibration is a 2D planar mapping tool only, Vision Studio never sends robot commands or performs automatic sorting, Dataset Studio does not train YOLO, Robot Studio does not sort live detections, Results Studio does not show hidden organizer scores, the IDE never arms the physical robot, and the AI page never calls OpenAI directly.
 
 Read [Architecture v1](docs/ARCHITECTURE_V1.md) and [AGENTS.md](AGENTS.md) for the project boundaries and acceptance gates.
 
@@ -35,7 +35,7 @@ Run the non-GUI workspace check:
 python -m ai_assessment --headless-check --workspace candidate_workspaces\C014
 ```
 
-Run the full M1-M7 tests:
+Run the full M1-M8 tests:
 
 ```bat
 python -m unittest discover -s tests -v
@@ -70,7 +70,7 @@ The GUI extra installs the required M3 dependencies, including PyYAML and Report
 python -m pip install -e ".[gui]"
 ```
 
-The full M1-M7 test suite remains:
+The full M1-M8 test suite remains:
 
 ```bat
 python -m unittest discover -s tests -v
@@ -126,6 +126,39 @@ python -m unittest discover -s tests -v
 ```
 
 A real Windows GPU run is still required to verify Ultralytics, CUDA/PyTorch compatibility, training duration, checkpoint production, and metric plots on the official image.
+
+## M8 AI Assistant and organizer gateway
+
+The **AI Assistant** page calls a separately run organizer gateway over versioned HTTP. The desktop contains no OpenAI SDK or provider key. It sends only the question and an explicitly selected context type: IDE selection, error traceback, or training metrics. The entire workspace, dataset, model weights, hidden material, and terminal input are never attached automatically. Local `ai.request` and `ai.result` events contain hashes and sizes, not raw prompt or response text; they remain local events until a future server receipt exists.
+
+For a labelled local practice session, install the server extra and start the deterministic fake-provider gateway from the repository root:
+
+```bat
+conda activate ai-assessment-studio
+python -m pip install -e ".[server]"
+python -m server.run_gateway --host 127.0.0.1 --port 8765 --practice-session C014 --practice-token practice-C014
+```
+
+In a second Anaconda Prompt, launch the desktop with the same operator-provisioned practice credential:
+
+```bat
+conda activate ai-assessment-studio
+set AI_GATEWAY_URL=http://127.0.0.1:8765
+set AI_GATEWAY_SESSION_TOKEN=practice-C014
+python -m ai_assessment --workspace candidate_workspaces\C014
+```
+
+The page shows the approved model, session allowance, connection state, request progress, history, and quota errors. Retry is always an explicit action using the same idempotency key; a timeout is shown as uncertain rather than silently resent. A quick mock-provider check is:
+
+```bat
+python -c "import requests; h={'Authorization':'Bearer practice-C014','Idempotency-Key':'smoke-1'}; print(requests.post('http://127.0.0.1:8765/api/v1/messages',headers=h,json={'message':'Say hello','context':{'type':'selected_text','text':'print(1)'}}).json())"
+```
+
+The gateway enforces server-side session authorization, input/context bounds, per-session and global budgets, concurrent requests, rate limits, reservations, stale cleanup, and idempotency. Practice credentials are explicitly labelled and are not proof of competition identity. Assessment mode accepts only a trusted organizer-provisioned credential; candidate ID, local `session.json`, editable client values, and local events cannot activate it. The competitor can inspect or script the desktop client, so all quota and access rules live on the gateway.
+
+For optional organizer-controlled live verification, install `.[server-live]`, set `OPENAI_API_KEY`, `AI_GATEWAY_MODEL`, and the server-side price assumptions on the organizer machine, then start with `--provider openai`. Never set the provider key in the candidate desktop environment or pass it to IDE/training processes. Provider tools, web access, uploads, and autonomous actions are disabled by this adapter.
+
+M9 still needs competition-day identity, signed activation, official server deployment, retention/access policy approval, network outage rehearsal, and organizer receipt integration. The local practice gateway is not an assessment security boundary.
 
 ## M7 IDE and terminal
 
