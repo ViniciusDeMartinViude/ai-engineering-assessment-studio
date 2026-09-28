@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import QModelIndex, QObject, QRect, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QPainter, QTextCursor, QTextFormat
+from PySide6.QtGui import QColor, QFont, QPainter, QTextCursor, QTextFormat
 from PySide6.QtWidgets import (
     QFileDialog,
     QFileSystemModel,
@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSplitter,
     QTabWidget,
+    QTextEdit,
     QTreeView,
     QVBoxLayout,
     QWidget,
@@ -46,6 +47,9 @@ class LineNumberArea(QWidget):
 class CodeEditor(QPlainTextEdit):
     def __init__(self) -> None:
         super().__init__()
+        self.setObjectName("codeEditor")
+        self.setFont(QFont("Consolas", 10))
+        self.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
         self.line_numbers = LineNumberArea(self)
         self.blockCountChanged.connect(self._update_line_number_width)
         self.updateRequest.connect(self._update_line_numbers)
@@ -94,7 +98,7 @@ class CodeEditor(QPlainTextEdit):
         selections = []
         if not self.isReadOnly():
             selection = QTextFormat.FullWidthSelection
-            extra = self.ExtraSelection()
+            extra = QTextEdit.ExtraSelection()
             extra.format.setBackground(QColor("#f3f8f5"))
             extra.format.setProperty(selection, True)
             extra.cursor = self.textCursor()
@@ -173,6 +177,19 @@ class IDEPage(QWidget):
         frame = QFrame()
         layout = QVBoxLayout(frame)
         layout.setContentsMargins(8, 0, 0, 0)
+
+        editor_panel = QFrame()
+        editor_panel.setObjectName("editorPanel")
+        editor_layout = QVBoxLayout(editor_panel)
+        editor_layout.setContentsMargins(10, 10, 10, 10)
+        editor_header = QHBoxLayout()
+        editor_title = QLabel("Python editor")
+        editor_title.setObjectName("sectionHeading")
+        editor_header.addWidget(editor_title)
+        editor_header.addWidget(QLabel("Candidate files under src/"))
+        editor_header.addStretch(1)
+        editor_layout.addLayout(editor_header)
+
         toolbar = QHBoxLayout()
         for label, handler in (("Save", self._save_current), ("Save As", self._save_as), ("Run Python", self._run), ("Stop", self._stop)):
             button = QPushButton(label)
@@ -182,24 +199,48 @@ class IDEPage(QWidget):
         self.arguments = QLineEdit()
         self.arguments.setPlaceholderText("optional arguments, parsed into an argument array")
         toolbar.addWidget(self.arguments, 1)
-        layout.addLayout(toolbar)
+        editor_layout.addLayout(toolbar)
 
         self.tabs = QTabWidget()
+        self.tabs.setObjectName("editorTabs")
         self.tabs.setTabsClosable(True)
+        self.tabs.setDocumentMode(True)
+        self.tabs.setMinimumHeight(250)
         self.tabs.tabCloseRequested.connect(self._close_tab)
         self.tabs.currentChanged.connect(self._current_changed)
-        layout.addWidget(self.tabs, 3)
+        editor_layout.addWidget(self.tabs, 1)
+        layout.addWidget(editor_panel, 3)
 
+        run_panel = QFrame()
+        run_panel.setObjectName("runPanel")
+        run_layout = QVBoxLayout(run_panel)
+        run_layout.setContentsMargins(10, 8, 10, 10)
+        run_header = QHBoxLayout()
+        run_title = QLabel("Run output")
+        run_title.setObjectName("sectionHeading")
+        run_header.addWidget(run_title)
         self.execution_status = QLabel("No Python run active")
+        run_header.addWidget(self.execution_status)
+        run_header.addStretch(1)
+        run_layout.addLayout(run_header)
         self.execution_output = QPlainTextEdit()
+        self.execution_output.setObjectName("outputConsole")
+        self.execution_output.setFont(QFont("Consolas", 9))
         self.execution_output.setReadOnly(True)
         self.execution_output.setMaximumBlockCount(2500)
         self.execution_output.setPlaceholderText("Python stdout and stderr will appear here.")
-        layout.addWidget(self.execution_status)
-        layout.addWidget(self.execution_output, 2)
+        run_layout.addWidget(self.execution_output)
+        layout.addWidget(run_panel, 2)
 
+        terminal_panel = QFrame()
+        terminal_panel.setObjectName("terminalPanel")
+        terminal_layout = QVBoxLayout(terminal_panel)
+        terminal_layout.setContentsMargins(10, 8, 10, 10)
         terminal_title = QHBoxLayout()
-        terminal_title.addWidget(QLabel("Terminal (pipe-based process)"))
+        terminal_heading = QLabel("Terminal")
+        terminal_heading.setObjectName("sectionHeading")
+        terminal_title.addWidget(terminal_heading)
+        terminal_title.addWidget(QLabel("pipe-based process"))
         self.terminal_status = QLabel("Stopped")
         terminal_title.addWidget(self.terminal_status)
         terminal_title.addStretch(1)
@@ -207,14 +248,16 @@ class IDEPage(QWidget):
             button = QPushButton(label)
             button.clicked.connect(handler)
             terminal_title.addWidget(button)
-        layout.addLayout(terminal_title)
+        terminal_layout.addLayout(terminal_title)
         limitation = QLabel("This terminal uses pipes: interactive console control sequences and secure prompt behavior may be limited. Input is never recorded.")
         limitation.setWordWrap(True)
-        layout.addWidget(limitation)
+        terminal_layout.addWidget(limitation)
         self.terminal_output = QPlainTextEdit()
+        self.terminal_output.setObjectName("outputConsole")
+        self.terminal_output.setFont(QFont("Consolas", 9))
         self.terminal_output.setReadOnly(True)
         self.terminal_output.setMaximumBlockCount(2500)
-        layout.addWidget(self.terminal_output, 2)
+        terminal_layout.addWidget(self.terminal_output)
         terminal_input = QHBoxLayout()
         self.terminal_command = QLineEdit()
         self.terminal_command.setPlaceholderText("command")
@@ -223,15 +266,55 @@ class IDEPage(QWidget):
         send.clicked.connect(self._send_terminal)
         terminal_input.addWidget(self.terminal_command, 1)
         terminal_input.addWidget(send)
-        layout.addLayout(terminal_input)
+        terminal_layout.addLayout(terminal_input)
+        layout.addWidget(terminal_panel, 2)
+        frame.setStyleSheet(
+            """
+            #editorPanel, #runPanel, #terminalPanel {
+                background: #ffffff;
+                border: 1px solid #b7c8bf;
+                border-radius: 6px;
+            }
+            #sectionHeading {
+                color: #173c2b;
+                font-size: 15px;
+                font-weight: 700;
+            }
+            #codeEditor, #outputConsole {
+                background: #fbfdfc;
+                border: 1px solid #819b8e;
+                border-radius: 4px;
+                selection-background-color: #cfe5d9;
+            }
+            #editorTabs::pane {
+                border: 1px solid #819b8e;
+                border-top: 0px;
+                background: #fbfdfc;
+            }
+            #editorTabs::tab {
+                background: #e7efeb;
+                border: 1px solid #b7c8bf;
+                border-bottom: 0px;
+                padding: 6px 12px;
+                min-width: 110px;
+            }
+            #editorTabs::tab:selected {
+                background: #fbfdfc;
+                color: #173c2b;
+                font-weight: 700;
+            }
+            """
+        )
         return frame
 
     def _new_file(self) -> None:
         editor = CodeEditor()
         editor.setProperty("path", None)
         editor.document().setModified(True)
+        editor.document().modificationChanged.connect(lambda _changed, e=editor: self._refresh_tab(e))
         index = self.tabs.addTab(editor, "* untitled.py")
         self.tabs.setCurrentIndex(index)
+        editor.setFocus()
 
     def _open_tree_item(self, index: QModelIndex) -> None:
         path = Path(self.file_model.filePath(index))
