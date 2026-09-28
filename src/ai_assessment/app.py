@@ -103,6 +103,7 @@ def main(argv: list[str] | None = None) -> int:
         from .modules.training import TrainingPage
         from .modules.vision import VisionPage
         from .services.ai_context import AIContextBuffer
+        from .services.ai_ide_transfer import AIIdeCoordinator
     except ImportError as exc:
         print(
             "PySide6, NumPy, OpenCV, and PyYAML are required to launch the desktop shell. "
@@ -192,6 +193,11 @@ def main(argv: list[str] | None = None) -> int:
             self.ide_page = None
             self.ai_page = None
             context_buffer = AIContextBuffer()
+            coordinator = AIIdeCoordinator(self)
+            ai_index = next(index for index, page in enumerate(PAGES) if page.title == "AI Assistant")
+            ide_index = next(index for index, page in enumerate(PAGES) if page.title == "IDE")
+            coordinator.ask_requested.connect(lambda _request: self.nav.setCurrentRow(ai_index))
+            coordinator.handoff_requested.connect(lambda _handoff: self.nav.setCurrentRow(ide_index))
             for page in PAGES:
                 if page.title == "Calibration":
                     self.calibration_page = CalibrationPage(workspace)
@@ -212,10 +218,10 @@ def main(argv: list[str] | None = None) -> int:
                     self.results_page = ResultsPage(workspace)
                     self.stack.addWidget(self.results_page)
                 elif page.title == "IDE":
-                    self.ide_page = IDEPage(workspace, context_buffer)
+                    self.ide_page = IDEPage(workspace, context_buffer, coordinator)
                     self.stack.addWidget(self.ide_page)
                 elif page.title == "AI Assistant":
-                    self.ai_page = AIAssistantPage(workspace, context_buffer)
+                    self.ai_page = AIAssistantPage(workspace, context_buffer, coordinator)
                     self.stack.addWidget(self.ai_page)
                 else:
                     self.stack.addWidget(Page(page))

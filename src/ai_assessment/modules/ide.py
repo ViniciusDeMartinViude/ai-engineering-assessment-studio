@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import difflib
 from pathlib import Path
 
 from PySide6.QtCore import QModelIndex, QObject, QRect, QSize, Qt, Signal
@@ -7,15 +8,19 @@ from PySide6.QtGui import QColor, QFont, QPainter, QTextCursor, QTextFormat
 from PySide6.QtWidgets import (
     QFileDialog,
     QFileSystemModel,
+    QDialog,
+    QDialogButtonBox,
     QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMenu,
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
     QSplitter,
     QTabWidget,
+    QToolButton,
     QTextEdit,
     QTreeView,
     QVBoxLayout,
@@ -24,6 +29,7 @@ from PySide6.QtWidgets import (
 
 from ..core.workspace import CandidateWorkspace
 from ..services.ai_context import AIContextBuffer
+from ..services.ai_ide_transfer import AIIdeCoordinator, AIAskRequest, IDEHandoff, sha256_text
 from ..services.execution import (
     ExecutionError,
     ExecutionResult,
@@ -116,10 +122,13 @@ class _Signals(QObject):
 
 
 class IDEPage(QWidget):
-    def __init__(self, workspace: CandidateWorkspace, context_buffer: AIContextBuffer | None = None) -> None:
+    def __init__(self, workspace: CandidateWorkspace, context_buffer: AIContextBuffer | None = None, coordinator: AIIdeCoordinator | None = None) -> None:
         super().__init__()
         self.workspace = workspace
         self.context_buffer = context_buffer or AIContextBuffer()
+        self.coordinator = coordinator
+        if self.coordinator is not None:
+            self.coordinator.handoff_requested.connect(self._receive_handoff)
         self.execution = ExecutionService(workspace)
         self.terminal = TerminalService(workspace)
         self.signals = _Signals()
@@ -201,6 +210,15 @@ class IDEPage(QWidget):
         attach.setToolTip("Make the selected editor text available to AI Assistant for deliberate attachment")
         attach.clicked.connect(self._attach_selection)
         toolbar.addWidget(attach)
+        ask_button = QToolButton()
+        ask_button.setText("Ask AI")
+        ask_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        ask_menu = QMenu(ask_button)
+        for action_name in ("Explain", "Fix", "Improve", "Generate code"):
+            action = ask_menu.addAction(action_name)
+            action.triggered.connect(lambda _checked=False, name=action_name: self._ask_ai(name))
+        ask_button.setMenu(ask_menu)
+        toolbar.addWidget(ask_button)
         toolbar.addWidget(QLabel("Arguments:"))
         self.arguments = QLineEdit()
         self.arguments.setPlaceholderText("optional arguments, parsed into an argument array")
@@ -419,6 +437,177 @@ class IDEPage(QWidget):
             return
         self.context_buffer.set("selected_text", text, "IDE selection")
         self.execution_status.setText(f"Attached {len(text)} characters for AI Assistant")
+
+    def _ask_ai(self, action: str) -> None:
+        editor = self._current_editor()
+        if editor is None:
+            self.execution_status.setText("Open an editor tab before asking AI")
+            return
+        whole_file = editor.toPlainText()
+        selected = editor.textCursor().selectedText().replace("\u2029", "\n")
+        has_selection = bool(selected)
+        if not has_selection:
+            answer = QMessageBox.question(
+                self,
+                "Send current file to AI?",
+                "Nothing is selected. Do you explicitly want to send the current file contents for this request?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                self.execution_status.setText("AI request cancelled; no code was sent")
+                return
+            code = whole_file
+        else:
+            code = selected
+        path = editor.property("path")
+        source_path = None
+        if path:
+            try:
+                source_path = self.execution.relative(self.execution.resolve_path(path))
+            except ExecutionError:
+                source_path = None
+        questions = {
+            "Explain": "Explain this code, including its assumptions and important edge cases.",
+            "Fix": "Review this code for bugs and propose a corrected version.",
+            "Improve": "Suggest focused improvements while preserving the intended behavior.",
+            "Generate code": "Generate code that completes the requested task using this context.",
+        }
+        request = AIAskRequest(
+            action=action,
+            question=questions[action],
+            source_path=source_path,
+            code=code,
+            file_hash=sha256_text(whole_file),
+            selection_hash=sha256_text(code),
+            has_selection=has_selection,
+        )
+        if self.coordinator is None:
+            self.execution_status.setText("AI integration is unavailable")
+            return
+        self.coordinator.request_ai(request)
+        self.execution_status.setText("AI preview ready; review it in AI Assistant before sending")
+
+    def _receive_handoff(self, handoff: IDEHandoff) -> None:
+        editor = self._current_editor()
+        stale = self._handoff_stale(handoff)
+        action = self._choose_handoff_action(handoff, editor, stale)
+        if action == "cancel":
+            self.execution_status.setText("IDE handoff cancelled")
+            return
+        if action == "replace" and editor is not None and not self._confirm_replacement(editor, handoff.block.code):
+            self.execution_status.setText("Replacement cancelled")
+            return
+        if self._apply_handoff(handoff, action):
+            self.execution_status.setText(f"{handoff.block.block_id} opened in IDE as an unsaved draft")
+
+    def _choose_handoff_action(self, handoff: IDEHandoff, editor: CodeEditor | None, stale: bool) -> str:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Send generated code to IDE")
+        layout = QVBoxLayout(dialog)
+        label = QLabel(f"Preview for {handoff.block.block_id} ({handoff.block.language})")
+        layout.addWidget(label)
+        if stale:
+            warning = QLabel("The original file, selection, or current tab changed. Choose a destination deliberately; no dirty tab will be overwritten silently.")
+            warning.setWordWrap(True)
+            warning.setStyleSheet("color: #8a4b08; font-weight: 700;")
+            layout.addWidget(warning)
+        preview = QPlainTextEdit()
+        preview.setReadOnly(True)
+        preview.setPlainText(handoff.block.code)
+        preview.setMinimumSize(600, 260)
+        layout.addWidget(preview)
+        buttons = QHBoxLayout()
+        choices = (("New file", "new_file"), ("Insert at cursor", "insert"), ("Replace selection", "replace"))
+        for title, action in choices:
+            button = QPushButton(title)
+            button.setEnabled(action == "new_file" or editor is not None)
+            if action == "replace" and (editor is None or not editor.textCursor().hasSelection()):
+                button.setEnabled(False)
+            button.clicked.connect(lambda _checked=False, value=action: dialog.done({"new_file": 1, "insert": 2, "replace": 3}[value]))
+            buttons.addWidget(button)
+        cancel = QPushButton("Cancel")
+        cancel.clicked.connect(dialog.reject)
+        buttons.addWidget(cancel)
+        layout.addLayout(buttons)
+        result = dialog.exec()
+        return {1: "new_file", 2: "insert", 3: "replace"}.get(result, "cancel")
+
+    def _confirm_replacement(self, editor: CodeEditor, code: str) -> bool:
+        old = editor.textCursor().selectedText().replace("\u2029", "\n")
+        diff = "".join(difflib.unified_diff(old.splitlines(True), code.splitlines(True), fromfile="current selection", tofile="generated code"))
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Preview replacement")
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(QLabel("Review this diff before replacing the selected text."))
+        view = QPlainTextEdit()
+        view.setReadOnly(True)
+        view.setPlainText(diff or code)
+        view.setMinimumSize(600, 260)
+        layout.addWidget(view)
+        box = QDialogButtonBox(QDialogButtonBox.StandardButton.Apply | QDialogButtonBox.StandardButton.Cancel)
+        box.accepted.connect(dialog.accept)
+        box.rejected.connect(dialog.reject)
+        layout.addWidget(box)
+        return dialog.exec() == QDialog.DialogCode.Accepted
+
+    def _handoff_stale(self, handoff: IDEHandoff) -> bool:
+        if not any((handoff.source_path, handoff.source_file_hash, handoff.source_selection_hash)):
+            return False
+        editor = self._current_editor()
+        if editor is None:
+            return True
+        current_path = editor.property("path")
+        try:
+            current_relative = self.execution.relative(self.execution.resolve_path(current_path)) if current_path else None
+        except ExecutionError:
+            return True
+        if handoff.source_path != current_relative:
+            return True
+        if handoff.source_file_hash and sha256_text(editor.toPlainText()) != handoff.source_file_hash:
+            return True
+        selected = editor.textCursor().selectedText().replace("\u2029", "\n")
+        if handoff.source_selection_hash and sha256_text(selected) != handoff.source_selection_hash:
+            return True
+        return editor.document().isModified()
+
+    def _apply_handoff(self, handoff: IDEHandoff, action: str) -> bool:
+        if action == "cancel":
+            return False
+        editor = self._current_editor()
+        if action == "new_file":
+            editor = CodeEditor()
+            editor.setProperty("path", None)
+            editor.setPlainText(handoff.block.code)
+            editor.document().setModified(True)
+            editor.document().modificationChanged.connect(lambda _changed, e=editor: self._refresh_tab(e))
+            index = self.tabs.addTab(editor, f"* generated_{handoff.block.block_id}.py")
+            self.tabs.setCurrentIndex(index)
+            editor.setFocus()
+        elif editor is None:
+            return False
+        elif action == "insert":
+            cursor = editor.textCursor()
+            cursor.clearSelection()
+            editor.setTextCursor(cursor)
+            cursor.insertText(handoff.block.code)
+            editor.setTextCursor(cursor)
+        elif action == "replace":
+            cursor = editor.textCursor()
+            if not cursor.hasSelection():
+                return False
+            cursor.insertText(handoff.block.code)
+            editor.setTextCursor(cursor)
+        else:
+            return False
+        target_path = None
+        if editor.property("path"):
+            try:
+                target_path = self.execution.relative(self.execution.resolve_path(editor.property("path")))
+            except ExecutionError:
+                target_path = None
+        self.workspace.record_event("ai.ide_handoff", {"response_id": handoff.response_id, "block_id": handoff.block.block_id, "code_sha256": handoff.block.code_hash, "action": action, "target_path": target_path}, outcome="accepted")
+        return True
 
     def _stop(self) -> None:
         if not self.execution.stop():

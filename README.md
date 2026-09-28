@@ -160,6 +160,10 @@ For optional organizer-controlled live verification, install `.[server-live]`, s
 
 M9 still needs competition-day identity, signed activation, official server deployment, retention/access policy approval, network outage rehearsal, and organizer receipt integration. The local practice gateway is not an assessment security boundary.
 
+### IDE to AI to IDE workflow
+
+In **IDE**, select code and choose **Ask AI > Explain**, **Fix**, **Improve**, or **Generate code**. The application moves to **AI Assistant** with the exact question and selected code visible for review; press **Send** deliberately. With no selection, the IDE asks whether the current file may be attached. Responses keep each fenced code block separate. Choose **Send to IDE** on one block, then select **New file**, **Insert at cursor**, or **Replace selection**. Replacement shows a diff first. The result opens as a modified unsaved draft and is never automatically saved or run. If the source file or selection changed while the request was in flight, the IDE warns and asks for a destination again. Model-suggested paths are ignored; all eventual saves still use the candidate workspace path checks.
+
 ## M7 IDE and terminal
 
 Open **IDE** to browse the candidate workspace and edit Python files under its `src/` directory. New files default there. Save and Save As validate every path through the candidate workspace boundary and reject `..`, symlink, junction, dataset, and repository-source writes. The editor has tabs, line numbers, modified indicators, and unsaved-change prompts. Saved files can import workspace code because the runner adds the candidate workspace `src/` to `PYTHONPATH`; they can inspect local training outputs and call the local M5 simulator URL shown in Robot Studio. Running code never arms a physical robot.

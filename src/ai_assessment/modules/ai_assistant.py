@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QScrollArea,
     QSplitter,
     QVBoxLayout,
     QWidget,
@@ -23,6 +24,7 @@ from PySide6.QtWidgets import (
 from ..core.workspace import CandidateWorkspace
 from ..services.ai_context import AIContextBuffer
 from ..services.ai_gateway import GatewayClient, GatewayClientError, SelectedContext
+from ..services.ai_ide_transfer import AIIdeCoordinator, AIAskRequest, CodeBlock, IDEHandoff, extract_code_blocks
 
 
 class _GatewayWorker(QObject):
@@ -51,14 +53,20 @@ class _GatewayWorker(QObject):
 
 
 class AIAssistantPage(QWidget):
-    def __init__(self, workspace: CandidateWorkspace, context_buffer: AIContextBuffer | None = None) -> None:
+    def __init__(self, workspace: CandidateWorkspace, context_buffer: AIContextBuffer | None = None, coordinator: AIIdeCoordinator | None = None) -> None:
         super().__init__()
         self.workspace = workspace
         self.context_buffer = context_buffer or AIContextBuffer()
+        self.coordinator = coordinator
+        if self.coordinator is not None:
+            self.coordinator.ask_requested.connect(self._receive_ide_request)
         self._thread: QThread | None = None
         self._worker: _GatewayWorker | None = None
         self._refresh_history_after_worker = False
         self._pending: tuple[str, SelectedContext, str] | None = None
+        self._ask_origin: AIAskRequest | None = None
+        self._response_origin: AIAskRequest | None = None
+        self._current_response_id: str | None = None
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -110,6 +118,14 @@ class AIAssistantPage(QWidget):
         self.history_view.setReadOnly(True)
         self.history_view.setMaximumBlockCount(2000)
         conversation_layout.addWidget(self.history_view)
+        conversation_layout.addWidget(QLabel("Generated code blocks"))
+        self.code_blocks_scroll = QScrollArea()
+        self.code_blocks_scroll.setWidgetResizable(True)
+        self.code_blocks_container = QWidget()
+        self.code_blocks_layout = QVBoxLayout(self.code_blocks_container)
+        self.code_blocks_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self.code_blocks_scroll.setWidget(self.code_blocks_container)
+        conversation_layout.addWidget(self.code_blocks_scroll)
         split.addWidget(conversation)
 
         compose = QFrame()
@@ -209,12 +225,16 @@ class AIAssistantPage(QWidget):
             self._render_history(data.get("items", []))
         elif operation == "send":
             self._pending = None
+            self._response_origin = self._ask_origin
+            self._ask_origin = None
             self.retry_button.setVisible(False)
             self.send_button.setEnabled(True)
             self.request_status.setText("Response received")
             answer = data.get("answer") or "(No response text returned)"
             self.history_view.appendPlainText(f"Assistant: {answer}\n")
             self.allowance_label.setText(f"Allowance: {data.get('remaining_cents', 'unavailable')} cents")
+            self._current_response_id = str(data.get("request_id") or "")
+            self._render_code_blocks(answer, self._current_response_id)
             self.workspace.record_event("ai.result", {"request_id": data.get("request_id"), "status": data.get("status"), "response_chars": len(answer), "response_sha256": hashlib.sha256(answer.encode('utf-8')).hexdigest(), "remaining_cents": data.get("remaining_cents")}, outcome=data.get("status", "completed"))
 
     def _worker_failed(self, operation: str, error: object) -> None:
@@ -253,6 +273,56 @@ class AIAssistantPage(QWidget):
         self.context_preview.setPlainText(self.context_buffer.text)
         self.request_status.setText(f"Attached {self.context_buffer.source or 'IDE'} context")
 
+    def _receive_ide_request(self, request: AIAskRequest) -> None:
+        self._ask_origin = request
+        self.message.setPlainText(request.question)
+        selected_index = self.context_type.findData("selected_text")
+        if selected_index >= 0:
+            self.context_type.setCurrentIndex(selected_index)
+        self.context_preview.setPlainText(request.code)
+        self.request_status.setText("IDE request preview ready. Review the question and code, then press Send.")
+        self.message.setFocus()
+
+    def _render_code_blocks(self, answer: str, response_id: str) -> None:
+        while self.code_blocks_layout.count():
+            item = self.code_blocks_layout.takeAt(0)
+            if item.widget() is not None:
+                item.widget().deleteLater()
+        blocks = extract_code_blocks(answer)
+        if not blocks:
+            self.code_blocks_layout.addWidget(QLabel("No fenced code blocks were returned."))
+            return
+        for block in blocks:
+            panel = QFrame()
+            panel.setFrameShape(QFrame.Shape.StyledPanel)
+            panel_layout = QVBoxLayout(panel)
+            panel_layout.addWidget(QLabel(f"{block.block_id} · {block.language} · {len(block.code)} characters"))
+            preview = QPlainTextEdit()
+            preview.setReadOnly(True)
+            preview.setPlainText(block.code)
+            preview.setMaximumHeight(130)
+            panel_layout.addWidget(preview)
+            send_button = QPushButton("Send to IDE")
+            send_button.clicked.connect(lambda _checked=False, b=block, rid=response_id: self._send_block_to_ide(rid, b))
+            panel_layout.addWidget(send_button)
+            self.code_blocks_layout.addWidget(panel)
+
+    def _send_block_to_ide(self, response_id: str, block: CodeBlock) -> None:
+        if self.coordinator is None:
+            self.request_status.setText("IDE handoff is unavailable")
+            return
+        origin = self._response_origin if self._current_response_id == response_id else None
+        self.coordinator.request_ide_handoff(
+            IDEHandoff(
+                response_id=response_id,
+                block=block,
+                source_path=origin.source_path if origin else None,
+                source_file_hash=origin.file_hash if origin else None,
+                source_selection_hash=origin.selection_hash if origin else None,
+            )
+        )
+        self.request_status.setText(f"Selected {block.block_id} for IDE handoff")
+
     def _send(self) -> None:
         self._begin_send()
 
@@ -277,6 +347,8 @@ class AIAssistantPage(QWidget):
             key = f"client-{uuid.uuid4().hex}"
             self._pending = (message, context, key)
             self.workspace.record_event("ai.request", {"request_id": key, "context_type": context.kind, "context_sha256": context.sha256, "message_chars": len(message), "gateway_url": self.gateway_url.text().strip()}, outcome="sent")
+            if self._ask_origin is not None:
+                self.workspace.record_event("ai.context_sent", {"request_id": key, "action": self._ask_origin.action, "source_path": self._ask_origin.source_path, "file_hash": self._ask_origin.file_hash, "selection_hash": self._ask_origin.selection_hash, "code_chars": len(self._ask_origin.code)}, outcome="sent")
         self.send_button.setEnabled(False)
         self.retry_button.setVisible(False)
         self.request_status.setText("Waiting for gateway...")
