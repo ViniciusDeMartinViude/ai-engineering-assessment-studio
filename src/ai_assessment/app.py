@@ -96,6 +96,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         from .modules.calibration import CalibrationPage
         from .modules.dataset import DatasetPage
+        from .modules.ide import IDEPage
         from .modules.robot import RobotPage
         from .modules.results import ResultsPage
         from .modules.training import TrainingPage
@@ -186,6 +187,7 @@ def main(argv: list[str] | None = None) -> int:
             self.robot_page = None
             self.training_page = None
             self.results_page = None
+            self.ide_page = None
             for page in PAGES:
                 if page.title == "Calibration":
                     self.calibration_page = CalibrationPage(workspace)
@@ -205,6 +207,9 @@ def main(argv: list[str] | None = None) -> int:
                 elif page.title == "Results":
                     self.results_page = ResultsPage(workspace)
                     self.stack.addWidget(self.results_page)
+                elif page.title == "IDE":
+                    self.ide_page = IDEPage(workspace)
+                    self.stack.addWidget(self.ide_page)
                 else:
                     self.stack.addWidget(Page(page))
             self.nav.currentRowChanged.connect(self.stack.setCurrentIndex)
@@ -233,6 +238,8 @@ def main(argv: list[str] | None = None) -> int:
                 self.training_page.shutdown()
             if self.results_page is not None:
                 self.results_page.shutdown()
+            if self.ide_page is not None:
+                self.ide_page.shutdown()
 
     app = QApplication([sys.argv[0]])
     app.setStyleSheet(

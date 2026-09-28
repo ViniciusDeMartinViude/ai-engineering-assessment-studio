@@ -1,0 +1,402 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+from PySide6.QtCore import QModelIndex, QObject, QRect, QSize, Qt, Signal
+from PySide6.QtGui import QColor, QPainter, QTextCursor, QTextFormat
+from PySide6.QtWidgets import (
+    QFileDialog,
+    QFileSystemModel,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QPlainTextEdit,
+    QPushButton,
+    QSplitter,
+    QTabWidget,
+    QTreeView,
+    QVBoxLayout,
+    QWidget,
+)
+
+from ..core.workspace import CandidateWorkspace
+from ..services.execution import (
+    ExecutionError,
+    ExecutionResult,
+    ExecutionService,
+    TerminalService,
+    parse_arguments,
+)
+
+
+class LineNumberArea(QWidget):
+    def __init__(self, editor: "CodeEditor") -> None:
+        super().__init__(editor)
+        self.editor = editor
+
+    def sizeHint(self) -> QSize:
+        return QSize(self.editor.line_number_width(), 0)
+
+    def paintEvent(self, event) -> None:  # noqa: N802 - Qt API
+        self.editor.paint_line_numbers(event)
+
+
+class CodeEditor(QPlainTextEdit):
+    def __init__(self) -> None:
+        super().__init__()
+        self.line_numbers = LineNumberArea(self)
+        self.blockCountChanged.connect(self._update_line_number_width)
+        self.updateRequest.connect(self._update_line_numbers)
+        self.cursorPositionChanged.connect(self._highlight_current_line)
+        self._update_line_number_width(0)
+        self._highlight_current_line()
+        self.setTabStopDistance(4 * self.fontMetrics().horizontalAdvance(" "))
+
+    def line_number_width(self) -> int:
+        digits = len(str(max(1, self.blockCount())))
+        return 12 + self.fontMetrics().horizontalAdvance("9") * digits
+
+    def _update_line_number_width(self, _count: int) -> None:
+        self.setViewportMargins(self.line_number_width(), 0, 0, 0)
+
+    def _update_line_numbers(self, rect: QRect, dy: int) -> None:
+        if dy:
+            self.line_numbers.scroll(0, dy)
+        else:
+            self.line_numbers.update(0, rect.y(), self.line_numbers.width(), rect.height())
+        if rect.contains(self.viewport().rect()):
+            self._update_line_number_width(0)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt API
+        super().resizeEvent(event)
+        contents = self.contentsRect()
+        self.line_numbers.setGeometry(QRect(contents.left(), contents.top(), self.line_number_width(), contents.height()))
+
+    def paint_line_numbers(self, event) -> None:
+        painter = QPainter(self.line_numbers)
+        painter.fillRect(event.rect(), QColor("#eef3f0"))
+        block = self.firstVisibleBlock()
+        block_number = block.blockNumber()
+        top = int(self.blockBoundingGeometry(block).translated(self.contentOffset()).top())
+        bottom = top + int(self.blockBoundingRect(block).height())
+        while block.isValid() and top <= event.rect().bottom():
+            if block.isVisible() and bottom >= event.rect().top():
+                painter.setPen(QColor("#77837d"))
+                painter.drawText(0, top, self.line_numbers.width() - 6, self.fontMetrics().height(), Qt.AlignmentFlag.AlignRight, str(block_number + 1))
+            block = block.next()
+            top = bottom
+            bottom = top + int(self.blockBoundingRect(block).height())
+            block_number += 1
+
+    def _highlight_current_line(self) -> None:
+        selections = []
+        if not self.isReadOnly():
+            selection = QTextFormat.FullWidthSelection
+            extra = self.ExtraSelection()
+            extra.format.setBackground(QColor("#f3f8f5"))
+            extra.format.setProperty(selection, True)
+            extra.cursor = self.textCursor()
+            extra.cursor.clearSelection()
+            selections.append(extra)
+        self.setExtraSelections(selections)
+
+
+class _Signals(QObject):
+    output = Signal(str, str)
+    completed = Signal(object)
+    terminal_output = Signal(str, str)
+    terminal_exited = Signal()
+
+
+class IDEPage(QWidget):
+    def __init__(self, workspace: CandidateWorkspace) -> None:
+        super().__init__()
+        self.workspace = workspace
+        self.execution = ExecutionService(workspace)
+        self.terminal = TerminalService(workspace)
+        self.signals = _Signals()
+        self.signals.output.connect(self._append_execution_output)
+        self.signals.completed.connect(self._execution_completed)
+        self.signals.terminal_output.connect(self._append_terminal_output)
+        self.signals.terminal_exited.connect(self._terminal_exited)
+        self._max_output_chars = 100_000
+        self._build_ui()
+
+    def _build_ui(self) -> None:
+        root = QVBoxLayout(self)
+        root.setContentsMargins(28, 24, 28, 24)
+        root.setSpacing(10)
+        heading = QHBoxLayout()
+        title = QLabel("IDE")
+        title.setObjectName("pageTitle")
+        badge = QLabel("M7")
+        badge.setObjectName("milestone")
+        heading.addWidget(title)
+        heading.addStretch(1)
+        heading.addWidget(badge)
+        root.addLayout(heading)
+        summary = QLabel(
+            "Edit and run candidate-owned Python files from workspace/src. Runs are local process executions, not an OS security sandbox."
+        )
+        summary.setObjectName("summary")
+        summary.setWordWrap(True)
+        root.addWidget(summary)
+
+        split = QSplitter(Qt.Orientation.Horizontal)
+        split.setChildrenCollapsible(False)
+        split.addWidget(self._build_tree())
+        split.addWidget(self._build_workbench())
+        split.setSizes([260, 860])
+        root.addWidget(split, 1)
+
+    def _build_tree(self) -> QWidget:
+        frame = QFrame()
+        layout = QVBoxLayout(frame)
+        layout.setContentsMargins(0, 0, 8, 0)
+        layout.addWidget(QLabel("Candidate workspace"))
+        self.file_model = QFileSystemModel(self)
+        self.file_model.setRootPath(str(self.workspace.root))
+        self.file_tree = QTreeView()
+        self.file_tree.setModel(self.file_model)
+        self.file_tree.setRootIndex(self.file_model.index(str(self.workspace.root)))
+        self.file_tree.setHeaderHidden(False)
+        self.file_tree.doubleClicked.connect(self._open_tree_item)
+        layout.addWidget(self.file_tree, 1)
+        new_button = QPushButton("New Python file")
+        new_button.clicked.connect(self._new_file)
+        layout.addWidget(new_button)
+        return frame
+
+    def _build_workbench(self) -> QWidget:
+        frame = QFrame()
+        layout = QVBoxLayout(frame)
+        layout.setContentsMargins(8, 0, 0, 0)
+        toolbar = QHBoxLayout()
+        for label, handler in (("Save", self._save_current), ("Save As", self._save_as), ("Run Python", self._run), ("Stop", self._stop)):
+            button = QPushButton(label)
+            button.clicked.connect(handler)
+            toolbar.addWidget(button)
+        toolbar.addWidget(QLabel("Arguments:"))
+        self.arguments = QLineEdit()
+        self.arguments.setPlaceholderText("optional arguments, parsed into an argument array")
+        toolbar.addWidget(self.arguments, 1)
+        layout.addLayout(toolbar)
+
+        self.tabs = QTabWidget()
+        self.tabs.setTabsClosable(True)
+        self.tabs.tabCloseRequested.connect(self._close_tab)
+        self.tabs.currentChanged.connect(self._current_changed)
+        layout.addWidget(self.tabs, 3)
+
+        self.execution_status = QLabel("No Python run active")
+        self.execution_output = QPlainTextEdit()
+        self.execution_output.setReadOnly(True)
+        self.execution_output.setMaximumBlockCount(2500)
+        self.execution_output.setPlaceholderText("Python stdout and stderr will appear here.")
+        layout.addWidget(self.execution_status)
+        layout.addWidget(self.execution_output, 2)
+
+        terminal_title = QHBoxLayout()
+        terminal_title.addWidget(QLabel("Terminal (pipe-based process)"))
+        self.terminal_status = QLabel("Stopped")
+        terminal_title.addWidget(self.terminal_status)
+        terminal_title.addStretch(1)
+        for label, handler in (("Start", self._start_terminal), ("Restart", self._restart_terminal), ("Stop", self._stop_terminal)):
+            button = QPushButton(label)
+            button.clicked.connect(handler)
+            terminal_title.addWidget(button)
+        layout.addLayout(terminal_title)
+        limitation = QLabel("This terminal uses pipes: interactive console control sequences and secure prompt behavior may be limited. Input is never recorded.")
+        limitation.setWordWrap(True)
+        layout.addWidget(limitation)
+        self.terminal_output = QPlainTextEdit()
+        self.terminal_output.setReadOnly(True)
+        self.terminal_output.setMaximumBlockCount(2500)
+        layout.addWidget(self.terminal_output, 2)
+        terminal_input = QHBoxLayout()
+        self.terminal_command = QLineEdit()
+        self.terminal_command.setPlaceholderText("command")
+        self.terminal_command.returnPressed.connect(self._send_terminal)
+        send = QPushButton("Send")
+        send.clicked.connect(self._send_terminal)
+        terminal_input.addWidget(self.terminal_command, 1)
+        terminal_input.addWidget(send)
+        layout.addLayout(terminal_input)
+        return frame
+
+    def _new_file(self) -> None:
+        editor = CodeEditor()
+        editor.setProperty("path", None)
+        editor.document().setModified(True)
+        index = self.tabs.addTab(editor, "* untitled.py")
+        self.tabs.setCurrentIndex(index)
+
+    def _open_tree_item(self, index: QModelIndex) -> None:
+        path = Path(self.file_model.filePath(index))
+        if not path.is_file():
+            return
+        try:
+            _, text = self.execution.load_file(path)
+        except (OSError, ExecutionError) as exc:
+            self._show_error(str(exc))
+            return
+        for tab_index in range(self.tabs.count()):
+            if self.tabs.widget(tab_index).property("path") == str(path):
+                self.tabs.setCurrentIndex(tab_index)
+                return
+        editor = CodeEditor()
+        editor.setPlainText(text)
+        editor.document().setModified(False)
+        editor.setProperty("path", str(path))
+        readonly = path.relative_to(self.workspace.root).parts[0].lower() == "dataset"
+        editor.setReadOnly(readonly)
+        index = self.tabs.addTab(editor, path.name)
+        self.tabs.setCurrentIndex(index)
+        editor.document().modificationChanged.connect(lambda _changed, e=editor: self._refresh_tab(e))
+
+    def _current_editor(self) -> CodeEditor | None:
+        widget = self.tabs.currentWidget()
+        return widget if isinstance(widget, CodeEditor) else None
+
+    def _current_changed(self, _index: int) -> None:
+        editor = self._current_editor()
+        if editor is not None:
+            self._refresh_tab(editor)
+
+    def _refresh_tab(self, editor: CodeEditor) -> None:
+        index = self.tabs.indexOf(editor)
+        path = editor.property("path")
+        name = Path(path).name if path else "untitled.py"
+        self.tabs.setTabText(index, ("* " if editor.document().isModified() else "") + name)
+
+    def _save_current(self) -> bool:
+        editor = self._current_editor()
+        if editor is None:
+            return False
+        path = editor.property("path")
+        if not path:
+            return self._save_as()
+        try:
+            saved, _ = self.execution.save_file(path, editor.toPlainText())
+        except (OSError, ExecutionError) as exc:
+            self._show_error(str(exc))
+            return False
+        editor.setProperty("path", str(saved))
+        editor.document().setModified(False)
+        self.file_model.setRootPath(str(self.workspace.root))
+        self._refresh_tab(editor)
+        return True
+
+    def _save_as(self) -> bool:
+        editor = self._current_editor()
+        if editor is None:
+            return False
+        default = str(self.workspace.root / "src" / "untitled.py")
+        filename, _ = QFileDialog.getSaveFileName(self, "Save Python file", default, "Python files (*.py);;All files (*.*)")
+        if not filename:
+            return False
+        editor.setProperty("path", filename)
+        return self._save_current()
+
+    def _run(self) -> None:
+        editor = self._current_editor()
+        if editor is None:
+            self._show_error("Open a Python file before running it.")
+            return
+        if editor.isReadOnly():
+            self._show_error("Dataset files and other read-only files cannot be run from the editor.")
+            return
+        if editor.document().isModified() and not self._save_current():
+            return
+        path = editor.property("path")
+        try:
+            args = parse_arguments(self.arguments.text())
+            run_id = self.execution.run_script(path, args, on_output=lambda s, t: self.signals.output.emit(s, t), on_complete=lambda r: self.signals.completed.emit(r))
+        except (ExecutionError, ValueError) as exc:
+            self._show_error(str(exc))
+            return
+        self.execution_status.setText(f"Running {run_id}")
+
+    def _stop(self) -> None:
+        if not self.execution.stop():
+            self.execution_status.setText("No Python run active")
+
+    def _append_execution_output(self, stream: str, text: str) -> None:
+        self._append_bounded(self.execution_output, stream, text)
+
+    def _execution_completed(self, result: ExecutionResult) -> None:
+        message = f"{result.status}: exit {result.exit_code} in {result.duration_ms} ms ({result.path})"
+        self.execution_status.setText(message)
+
+    def _start_terminal(self) -> None:
+        try:
+            self.terminal.start(on_output=lambda s, t: self.signals.terminal_output.emit(s, t), on_exit=lambda: self.signals.terminal_exited.emit())
+        except ExecutionError as exc:
+            self._show_error(str(exc))
+            return
+        self.terminal_status.setText("Running")
+
+    def _restart_terminal(self) -> None:
+        try:
+            self.terminal.restart(on_output=lambda s, t: self.signals.terminal_output.emit(s, t), on_exit=lambda: self.signals.terminal_exited.emit())
+        except ExecutionError as exc:
+            self._show_error(str(exc))
+            return
+        self.terminal_status.setText("Running")
+
+    def _stop_terminal(self) -> None:
+        self.terminal.stop()
+        self.terminal_status.setText("Stopped")
+
+    def _send_terminal(self) -> None:
+        command = self.terminal_command.text()
+        if not command:
+            return
+        try:
+            self.terminal.write(command)
+        except ExecutionError as exc:
+            self._show_error(str(exc))
+            return
+        self.terminal_command.clear()
+
+    def _append_terminal_output(self, stream: str, text: str) -> None:
+        self._append_bounded(self.terminal_output, stream, text)
+
+    def _append_bounded(self, output: QPlainTextEdit, stream: str, text: str) -> None:
+        output.appendPlainText(f"[{stream}] {text.rstrip()}")
+        content = output.toPlainText()
+        if len(content) > self._max_output_chars:
+            output.setPlainText(content[-self._max_output_chars :])
+            output.moveCursor(QTextCursor.MoveOperation.End)
+
+    def _terminal_exited(self) -> None:
+        self.terminal_status.setText("Stopped")
+
+    def _close_tab(self, index: int) -> None:
+        editor = self.tabs.widget(index)
+        if isinstance(editor, CodeEditor) and editor.document().isModified():
+            answer = QMessageBox.question(self, "Unsaved changes", "Save changes before closing this tab?", QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel)
+            if answer == QMessageBox.StandardButton.Cancel:
+                return
+            if answer == QMessageBox.StandardButton.Save:
+                self.tabs.setCurrentIndex(index)
+                if not self._save_current():
+                    return
+        self.tabs.removeTab(index)
+        editor.deleteLater()
+
+    def _show_error(self, message: str) -> None:
+        QMessageBox.warning(self, "IDE", message)
+
+    def shutdown(self) -> None:
+        for index in range(self.tabs.count() - 1, -1, -1):
+            editor = self.tabs.widget(index)
+            if isinstance(editor, CodeEditor) and editor.document().isModified():
+                self.tabs.setCurrentIndex(index)
+                answer = QMessageBox.question(self, "Unsaved changes", "Save changes before closing the application?", QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard)
+                if answer == QMessageBox.StandardButton.Save:
+                    self._save_current()
+        self.execution.shutdown()
+        self.terminal.shutdown()

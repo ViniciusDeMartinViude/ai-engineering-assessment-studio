@@ -1,8 +1,8 @@
 # AI Engineering Assessment Studio
 
-AI Engineering date-fruit training and assessment workstation. M1 provides a PySide6 desktop shell with navigation across the planned application pages, a candidate workspace, append-only local event logs, and idempotent server-receipt acknowledgement storage. M2 adds an embedded four-point camera-to-robot calibration workspace. M3 adds Dataset Studio for read-only YOLO dataset inspection, four-class subset export, and printable object exports. M4 adds an embedded Vision Studio for camera preview, ROI processing, local YOLO inference, and full-frame detection centers. M5 adds supervised Robot Studio. M6 adds recorded YOLO training experiments and candidate-visible Results Studio.
+AI Engineering date-fruit training and assessment workstation. M1 provides a PySide6 desktop shell with navigation across the planned application pages, a candidate workspace, append-only local event logs, and idempotent server-receipt acknowledgement storage. M2 adds an embedded four-point camera-to-robot calibration workspace. M3 adds Dataset Studio for read-only YOLO dataset inspection, four-class subset export, and printable object exports. M4 adds an embedded Vision Studio for camera preview, ROI processing, local YOLO inference, and full-frame detection centers. M5 adds supervised Robot Studio. M6 adds recorded YOLO training experiments and candidate-visible Results Studio. M7 adds a workspace-owned Python IDE and a process-backed terminal.
 
-The M1-M6 shell does not connect to an organizer server yet. Local events remain pending until a future organizer integration records a server acknowledgement. Calibration is a 2D planar mapping tool only, Vision Studio never sends robot commands or performs automatic sorting, Dataset Studio does not train YOLO, Robot Studio does not sort live detections, and Results Studio does not show hidden organizer scores.
+The M1-M7 shell does not connect to an organizer server yet. Local events remain pending until a future organizer integration records a server acknowledgement. Calibration is a 2D planar mapping tool only, Vision Studio never sends robot commands or performs automatic sorting, Dataset Studio does not train YOLO, Robot Studio does not sort live detections, Results Studio does not show hidden organizer scores, and the IDE never arms the physical robot.
 
 Read [Architecture v1](docs/ARCHITECTURE_V1.md) and [AGENTS.md](AGENTS.md) for the project boundaries and acceptance gates.
 
@@ -35,7 +35,7 @@ Run the non-GUI workspace check:
 python -m ai_assessment --headless-check --workspace candidate_workspaces\C014
 ```
 
-Run the full M1-M6 tests:
+Run the full M1-M7 tests:
 
 ```bat
 python -m unittest discover -s tests -v
@@ -70,7 +70,7 @@ The GUI extra installs the required M3 dependencies, including PyYAML and Report
 python -m pip install -e ".[gui]"
 ```
 
-The full M1-M6 test suite remains:
+The full M1-M7 test suite remains:
 
 ```bat
 python -m unittest discover -s tests -v
@@ -126,3 +126,19 @@ python -m unittest discover -s tests -v
 ```
 
 A real Windows GPU run is still required to verify Ultralytics, CUDA/PyTorch compatibility, training duration, checkpoint production, and metric plots on the official image.
+
+## M7 IDE and terminal
+
+Open **IDE** to browse the candidate workspace and edit Python files under its `src/` directory. New files default there. Save and Save As validate every path through the candidate workspace boundary and reject `..`, symlink, junction, dataset, and repository-source writes. The editor has tabs, line numbers, modified indicators, and unsaved-change prompts. Saved files can import workspace code because the runner adds the candidate workspace `src/` to `PYTHONPATH`; they can inspect local training outputs and call the local M5 simulator URL shown in Robot Studio. Running code never arms a physical robot.
+
+**Run Python** launches the saved file with the configured local interpreter, an argument array, and the candidate workspace as its working directory. Output streams live, exit status and duration are shown, and complete output is kept in `logs/execution/`. The Stop button owns only the IDE process tree and does not stop M6 training. Repeated runs are rejected while one run is active. Candidate execution is not an OS security sandbox; do not treat it as a boundary for untrusted code. Provider keys and hidden assessment material are not injected into the child environment.
+
+The terminal is a real `cmd.exe` process on Windows (or `/bin/sh` on other platforms) with stdin and streamed stdout/stderr. It starts in the candidate workspace and can be restarted independently. Because it is pipe-based, full Windows console features, terminal control sequences, and some secure interactive prompts may be limited. Terminal input and passwords are not recorded.
+
+### Windows M7 smoke checklist
+
+1. Open IDE, create a Python file, edit it, save it, close and reopen the tab, and confirm the modified marker and save prompt.
+2. Run a script that prints Unicode and both normal output and a traceback; confirm the streams and exit code appear.
+3. Run a long-lived script that starts a child process, press Stop, and confirm the script and child exit without changing a training job.
+4. Start, stop, and restart the terminal; run a harmless command from the workspace.
+5. Start the M5 local simulator, copy its displayed URL, and run a candidate script using `requests` against `/health` or `/positions`. Confirm the simulator responds and no physical-robot enable action is created.
