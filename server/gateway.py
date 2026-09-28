@@ -169,8 +169,13 @@ class GatewayService:
         self.provider = provider or FakeProvider()
         self._lock = threading.RLock()
         self._database = str(database)
-        self._connection = sqlite3.connect(self._database, check_same_thread=False, isolation_level=None)
+        if self._database != ":memory:":
+            Path(self._database).expanduser().resolve().parent.mkdir(parents=True, exist_ok=True)
+        self._connection = sqlite3.connect(self._database, timeout=10.0, check_same_thread=False, isolation_level=None)
         self._connection.row_factory = sqlite3.Row
+        self._connection.execute("PRAGMA busy_timeout = 10000")
+        if self._database != ":memory:":
+            self._connection.execute("PRAGMA journal_mode = WAL")
         self._init_database()
 
     def _init_database(self) -> None:

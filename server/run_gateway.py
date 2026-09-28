@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import os
+import sqlite3
+from pathlib import Path
 
 import uvicorn
 
@@ -30,7 +32,13 @@ def main(argv: list[str] | None = None) -> int:
             raise SystemExit("AI_GATEWAY_MODEL must be set for the server-only live provider")
         config = GatewayConfig(approved_models={model: (float(os.environ.get("AI_GATEWAY_INPUT_CENTS_PER_1K", "1")), float(os.environ.get("AI_GATEWAY_OUTPUT_CENTS_PER_1K", "1")))})
         provider = OpenAIProvider()
-    service = GatewayService(args.db, provider=provider, config=config)
+    try:
+        service = GatewayService(args.db, provider=provider, config=config)
+    except (OSError, sqlite3.Error) as exc:
+        raise SystemExit(
+            f"Could not open gateway database '{Path(args.db).expanduser()}': {exc}. "
+            "Stop any other gateway using this file or choose a new --db path."
+        ) from exc
     if args.practice_session:
         token = service.create_practice_session(args.practice_session, credential=args.practice_token)
         print(f"practice_session={args.practice_session} practice_token={token}")
