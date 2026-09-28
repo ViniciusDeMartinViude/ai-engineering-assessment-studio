@@ -190,8 +190,8 @@ class TrainingPage(QWidget):
             QGroupBox { background: #ffffff; border: 1px solid #d6e2dc; border-radius: 7px; margin-top: 8px; padding: 10px; font-weight: 700; }
             QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; }
             QPushButton, QComboBox, QLineEdit, QSpinBox { min-height: 27px; padding: 4px 7px; }
-            QPushButton { background: #f4f8f6; border: 1px solid #cbdad2; border-radius: 5px; }
-            QPushButton:hover { background: #e4f1eb; }
+            QPushButton { background: #ffffff; color: #17304d; border: 1px solid #8fa5b5; border-radius: 5px; min-height: 32px; padding: 7px 13px; font-weight: 600; }
+            QPushButton:hover { background: #e8f3f2; border-color: #087f75; }
             QPushButton#trainingPrimary { background: #17745d; color: white; font-weight: 800; }
             QTableWidget, QPlainTextEdit { background: white; border: 1px solid #d5e2dc; }
             """

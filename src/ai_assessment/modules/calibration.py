@@ -314,11 +314,11 @@ class CalibrationPage(QWidget):
             QLabel#calibrationWarning { background: #fff0ed; color: #9f2d20; border-radius: 8px; padding: 10px; }
             QLabel#calibrationResult { background: #087f75; color: white; border-radius: 10px; padding: 14px; font-size: 25px; font-weight: 800; }
             QLabel#calibrationMatrixNote { color: #61748c; font-size: 12px; }
-            QPushButton { background: #f5f8fc; color: #254260; border: 1px solid #cfdeeb; border-radius: 7px; padding: 7px 10px; min-height: 30px; }
-            QPushButton:hover { background: #e7f3f7; border-color: #60bcb5; }
+            QPushButton { background: #ffffff; color: #17304d; border: 1px solid #8fa5b5; border-radius: 5px; padding: 7px 13px; min-height: 32px; font-weight: 600; }
+            QPushButton:hover { background: #e8f3f2; border-color: #087f75; }
             QPushButton#calibrationPrimary { background: #087f75; border-color: #087f75; color: white; font-weight: 800; }
             QPushButton#pointButton:checked { background: #ddf6f1; border: 2px solid #0b9d91; color: #086c63; font-weight: 800; }
-            QRadioButton { background: #f5f8fc; color: #254260; border: 1px solid #cfdeeb; border-radius: 7px; padding: 7px 10px; }
+            QRadioButton { background: #ffffff; color: #17304d; border: 1px solid #8fa5b5; border-radius: 5px; padding: 7px 13px; min-height: 32px; }
             QRadioButton:checked { background: #ddf6f1; border: 2px solid #0b9d91; color: #086c63; }
             QDoubleSpinBox, QSpinBox { background: #ffffff; color: #17304d; border: 1px solid #cbd9e6; border-radius: 7px; padding: 5px 8px; min-height: 27px; }
             QPlainTextEdit#calibrationMatrix { background: #f2f6fb; color: #17304d; border: 1px solid #d4e2ed; border-radius: 8px; padding: 9px; }

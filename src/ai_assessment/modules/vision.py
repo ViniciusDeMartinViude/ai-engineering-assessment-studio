@@ -15,6 +15,8 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFileDialog,
     QFrame,
+    QGridLayout,
+    QGroupBox,
     QHeaderView,
     QHBoxLayout,
     QLabel,
@@ -217,41 +219,92 @@ class VisionPage(QWidget):
         controls = QFrame()
         controls.setObjectName("visionCard")
         controls_layout = QVBoxLayout(controls)
-        controls_layout.setContentsMargins(13, 11, 13, 11)
-        line_one = QHBoxLayout()
-        line_one.addWidget(QLabel("Camera"))
+        controls_layout.setContentsMargins(14, 12, 14, 12)
+        controls_layout.setSpacing(10)
+
+        source_row = QHBoxLayout()
+        source_row.setSpacing(10)
+
+        source_group = QGroupBox("Input source")
+        source_group.setObjectName("visionControlGroup")
+        source_layout = QGridLayout(source_group)
+        source_layout.setContentsMargins(11, 12, 11, 10)
+        source_layout.setHorizontalSpacing(9)
+        source_layout.setVerticalSpacing(7)
+        source_layout.addWidget(QLabel("Camera index"), 0, 0)
         self.camera_index = QSpinBox()
         self.camera_index.setRange(0, 20)
-        line_one.addWidget(self.camera_index)
-        line_one.addWidget(QLabel("Local model"))
+        source_layout.addWidget(self.camera_index, 0, 1)
+        source_layout.setColumnStretch(1, 1)
+        source_row.addWidget(source_group)
+
+        model_group = QGroupBox("Local model")
+        model_group.setObjectName("visionControlGroup")
+        model_layout = QGridLayout(model_group)
+        model_layout.setContentsMargins(11, 12, 11, 10)
+        model_layout.setHorizontalSpacing(8)
+        model_layout.setVerticalSpacing(7)
+        model_layout.addWidget(QLabel("Weights file"), 0, 0)
         self.model_path = QLineEdit()
         self.model_path.setPlaceholderText("Optional .pt or .onnx file; preview works without a model")
         self.model_path.editingFinished.connect(self._model_path_changed)
-        line_one.addWidget(self.model_path, 1)
+        model_layout.addWidget(self.model_path, 0, 1, 1, 2)
         choose_model = QPushButton("Browse model...")
+        choose_model.setObjectName("visionSecondary")
         choose_model.clicked.connect(self._browse_model)
-        line_one.addWidget(choose_model)
+        model_layout.addWidget(choose_model, 1, 1)
         self.load_model_button = QPushButton("Load model")
+        self.load_model_button.setObjectName("visionAction")
         self.load_model_button.clicked.connect(self._load_model)
-        line_one.addWidget(self.load_model_button)
+        model_layout.addWidget(self.load_model_button, 1, 2)
+        model_layout.setColumnStretch(1, 1)
+        source_row.addWidget(model_group, 1)
+
+        capture_group = QGroupBox("Capture")
+        capture_group.setObjectName("visionControlGroup")
+        capture_layout = QHBoxLayout(capture_group)
+        capture_layout.setContentsMargins(11, 12, 11, 10)
+        capture_layout.setSpacing(8)
         self.start_button = QPushButton("Start camera")
         self.start_button.setObjectName("visionPrimary")
         self.start_button.clicked.connect(self._start_camera)
-        line_one.addWidget(self.start_button)
+        capture_layout.addWidget(self.start_button)
         self.stop_button = QPushButton("Stop")
+        self.stop_button.setObjectName("visionStop")
         self.stop_button.clicked.connect(self._stop_camera)
         self.stop_button.setEnabled(False)
-        line_one.addWidget(self.stop_button)
-        controls_layout.addLayout(line_one)
+        capture_layout.addWidget(self.stop_button)
+        source_row.addWidget(capture_group)
+        controls_layout.addLayout(source_row)
 
-        line_two = QHBoxLayout()
+        tuning_row = QHBoxLayout()
+        tuning_row.setSpacing(10)
+
+        inference_group = QGroupBox("Inference adjustments")
+        inference_group.setObjectName("visionControlGroup")
+        inference_layout = QGridLayout(inference_group)
+        inference_layout.setContentsMargins(11, 12, 11, 10)
+        inference_layout.setHorizontalSpacing(8)
+        inference_layout.setVerticalSpacing(7)
         self.confidence = self._double_control(0.05, 0.99, 0.5, 2)
         self.brightness = QSpinBox()
         self.brightness.setRange(-100, 100)
         self.contrast = self._double_control(0.2, 3.0, 1.0, 2)
-        for label, widget in (("Confidence", self.confidence), ("Brightness", self.brightness), ("Contrast", self.contrast)):
-            line_two.addWidget(QLabel(label))
-            line_two.addWidget(widget)
+        for column, (label, widget) in enumerate(
+            (("Confidence", self.confidence), ("Brightness", self.brightness), ("Contrast", self.contrast))
+        ):
+            inference_layout.addWidget(QLabel(label), 0, column * 2)
+            inference_layout.addWidget(widget, 0, column * 2 + 1)
+        for column in range(3):
+            inference_layout.setColumnStretch(column * 2 + 1, 1)
+        tuning_row.addWidget(inference_group, 1)
+
+        camera_group = QGroupBox("Camera properties")
+        camera_group.setObjectName("visionControlGroup")
+        camera_layout = QGridLayout(camera_group)
+        camera_layout.setContentsMargins(11, 12, 11, 10)
+        camera_layout.setHorizontalSpacing(8)
+        camera_layout.setVerticalSpacing(7)
         self.auto_exposure = QCheckBox("Auto exposure")
         self.auto_exposure.setChecked(True)
         self.exposure = self._double_control(-20, 20, -6, 2)
@@ -261,34 +314,48 @@ class VisionPage(QWidget):
         self.auto_white_balance = QCheckBox("Auto white balance")
         self.auto_white_balance.setChecked(True)
         self.white_balance = self._double_control(2000, 10000, 4500, 0)
-        for widget in (self.auto_exposure, QLabel("Exposure"), self.exposure,
-                       self.auto_focus, QLabel("Focus"), self.focus,
-                       self.auto_white_balance, QLabel("White balance"), self.white_balance):
-            line_two.addWidget(widget)
-        line_two.addStretch(1)
-        controls_layout.addLayout(line_two)
+        for row, (auto_control, label, value_control) in enumerate(
+            (
+                (self.auto_exposure, "Exposure", self.exposure),
+                (self.auto_focus, "Focus", self.focus),
+                (self.auto_white_balance, "White balance", self.white_balance),
+            )
+        ):
+            camera_layout.addWidget(auto_control, row, 0)
+            camera_layout.addWidget(QLabel(label), row, 1)
+            camera_layout.addWidget(value_control, row, 2)
+        camera_layout.setColumnStretch(2, 1)
+        tuning_row.addWidget(camera_group, 1)
+        controls_layout.addLayout(tuning_row)
 
-        line_three = QHBoxLayout()
+        action_row = QHBoxLayout()
+        action_row.setSpacing(8)
         self.save_profile_button = QPushButton("Save camera profile")
+        self.save_profile_button.setObjectName("visionSecondary")
         self.save_profile_button.clicked.connect(self._save_profile)
-        line_three.addWidget(self.save_profile_button)
+        action_row.addWidget(self.save_profile_button)
         self.snapshot_button = QPushButton("Save snapshot")
+        self.snapshot_button.setObjectName("visionAction")
         self.snapshot_button.clicked.connect(self._save_snapshot)
         self.snapshot_button.setEnabled(False)
-        line_three.addWidget(self.snapshot_button)
+        action_row.addWidget(self.snapshot_button)
         clear_roi = QPushButton("Clear ROI")
+        clear_roi.setObjectName("visionSecondary")
         clear_roi.clicked.connect(self._clear_roi)
-        line_three.addWidget(clear_roi)
+        action_row.addWidget(clear_roi)
         self.reload_calibration_button = QPushButton("Reload calibration")
+        self.reload_calibration_button.setObjectName("visionSecondary")
         self.reload_calibration_button.clicked.connect(self._load_calibration)
-        line_three.addWidget(self.reload_calibration_button)
+        action_row.addWidget(self.reload_calibration_button)
+        action_row.addStretch(1)
         self.device_label = QLabel("Device: preview only")
         self.device_label.setObjectName("visionDevice")
-        line_three.addWidget(self.device_label)
+        action_row.addWidget(self.device_label)
         self.camera_readback = QLabel("Camera requested/read-back values appear after start.")
         self.camera_readback.setWordWrap(True)
-        line_three.addWidget(self.camera_readback, 1)
-        controls_layout.addLayout(line_three)
+        self.camera_readback.setObjectName("visionReadback")
+        action_row.addWidget(self.camera_readback, 1)
+        controls_layout.addLayout(action_row)
         root.addWidget(controls)
 
         center = QSplitter(Qt.Orientation.Horizontal)
@@ -359,9 +426,17 @@ class VisionPage(QWidget):
             QLabel#visionWarning { background: #fff0ed; color: #9f2d20; border-radius: 8px; padding: 9px; }
             QLabel#visionHint { background: #fff6e5; color: #795214; border-radius: 8px; padding: 7px; }
             QLabel#visionDevice { color: #14675f; font-weight: 800; }
-            QPushButton { background: #f5f8fc; color: #254260; border: 1px solid #cfdeeb; border-radius: 7px; padding: 7px 10px; min-height: 29px; }
-            QPushButton:hover { background: #e7f3f7; border-color: #60bcb5; }
+             QLabel#visionReadback { color: #61748c; }
+             QGroupBox#visionControlGroup { background: #f8fbfc; border: 1px solid #c7d8df; border-radius: 7px; margin-top: 8px; padding: 9px; }
+             QGroupBox#visionControlGroup::title { color: #2a4c63; font-size: 12px; font-weight: 800; padding: 0 4px; }
+            QPushButton { background: #ffffff; color: #17304d; border: 1px solid #8fa5b5; border-radius: 5px; padding: 7px 13px; min-height: 32px; font-weight: 600; }
+            QPushButton:hover { background: #e8f3f2; border-color: #087f75; }
             QPushButton#visionPrimary { background: #087f75; border-color: #087f75; color: white; font-weight: 800; }
+             QPushButton#visionPrimary:hover { background: #0a988d; border-color: #0a988d; }
+             QPushButton#visionStop { background: #fff8f6; color: #a13b2f; border-color: #e0aaa2; }
+             QPushButton#visionStop:hover { background: #ffe9e5; border-color: #b74b3e; }
+             QPushButton#visionAction { background: #e8f3f2; color: #075f59; border-color: #76bdb7; font-weight: 700; }
+             QPushButton#visionAction:hover { background: #d3e9e6; border-color: #087f75; }
             QLineEdit, QSpinBox, QDoubleSpinBox { background: white; color: #17304d; border: 1px solid #cbd9e6; border-radius: 7px; padding: 5px 8px; }
             QTableWidget { background: white; color: #17304d; border: 1px solid #d4e2ed; border-radius: 7px; }
             """

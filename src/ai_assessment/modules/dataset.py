@@ -160,8 +160,8 @@ class DatasetPage(QWidget):
             QLabel#datasetSection { color: #17304d; font-size: 17px; font-weight: 750; }
             QLabel#datasetStatus { background: #e9f8f5; color: #14675f; border-radius: 8px; padding: 9px; }
             QLabel#datasetWarning { background: #fff6e5; color: #795214; border-radius: 8px; padding: 9px; }
-            QPushButton { background: #f5f8fc; color: #254260; border: 1px solid #cfdeeb; border-radius: 7px; padding: 7px 10px; min-height: 29px; }
-            QPushButton:hover { background: #e7f3f7; border-color: #60bcb5; }
+            QPushButton { background: #ffffff; color: #17304d; border: 1px solid #8fa5b5; border-radius: 5px; padding: 7px 13px; min-height: 32px; font-weight: 600; }
+            QPushButton:hover { background: #e8f3f2; border-color: #087f75; }
             QPushButton#datasetPrimary { background: #087f75; border-color: #087f75; color: white; font-weight: 800; }
             QLineEdit, QSpinBox { background: white; color: #17304d; border: 1px solid #cbd9e6; border-radius: 7px; padding: 5px 8px; }
             QTableWidget, QListWidget, QPlainTextEdit { background: white; color: #17304d; border: 1px solid #d4e2ed; border-radius: 7px; }

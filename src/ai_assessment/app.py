@@ -314,6 +314,95 @@ def main(argv: list[str] | None = None) -> int:
             border-radius: 6px;
             padding: 10px;
         }
+        QPushButton, QToolButton {
+            background: #ffffff;
+            color: #17304d;
+            border: 1px solid #8fa5b5;
+            border-radius: 5px;
+            padding: 7px 13px;
+            min-height: 32px;
+            font-weight: 600;
+        }
+        QPushButton:hover, QToolButton:hover {
+            background: #e8f3f2;
+            border-color: #087f75;
+        }
+        QPushButton:pressed, QToolButton:pressed {
+            background: #d3e9e6;
+            border-color: #05665e;
+        }
+        QPushButton:focus, QToolButton:focus {
+            border: 2px solid #087f75;
+            padding: 6px 12px;
+        }
+        QPushButton:disabled, QToolButton:disabled {
+            background: #eef2f3;
+            color: #89979e;
+            border-color: #cbd5d9;
+        }
+        QToolButton::menu-button {
+            border-left: 1px solid #b6c5cb;
+            width: 20px;
+        }
+        QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {
+            background: #ffffff;
+            color: #17304d;
+            border: 1px solid #9eb0bc;
+            border-radius: 5px;
+            padding: 6px 9px;
+            min-height: 32px;
+        }
+        QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus {
+            border: 2px solid #087f75;
+            padding: 5px 8px;
+        }
+        QComboBox::drop-down {
+            border-left: 1px solid #c2d0d5;
+            width: 26px;
+        }
+        QCheckBox {
+            spacing: 7px;
+        }
+        QCheckBox::indicator {
+            width: 16px;
+            height: 16px;
+        }
+        QGroupBox {
+            background: #ffffff;
+            border: 1px solid #c7d4d8;
+            border-radius: 6px;
+            margin-top: 9px;
+            padding: 10px;
+        }
+        QGroupBox::title {
+            subcontrol-origin: margin;
+            left: 10px;
+            padding: 0 5px;
+            color: #173c2b;
+            font-weight: 700;
+        }
+        QTabWidget::pane {
+            border: 1px solid #c7d4d8;
+            background: #ffffff;
+        }
+        QTabBar::tab {
+            background: #eaf0f1;
+            color: #53656b;
+            border: 1px solid #c7d4d8;
+            padding: 7px 13px;
+            min-width: 92px;
+        }
+        QTabBar::tab:selected {
+            background: #ffffff;
+            color: #173c2b;
+            font-weight: 700;
+            border-bottom-color: #ffffff;
+        }
+        QStatusBar {
+            background: #eef4f1;
+            color: #53635c;
+            border-top: 1px solid #d5ded9;
+        }
         """
     )
     window = MainWindow()
