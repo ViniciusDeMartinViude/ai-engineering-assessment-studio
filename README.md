@@ -13,6 +13,8 @@ Read [Architecture v1](docs/ARCHITECTURE_V1.md) and [AGENTS.md](AGENTS.md) for t
 
 Use Anaconda Prompt or another shell where `conda` is initialized. The project baseline targets Python 3.12:
 
+The easiest setup is to run [`install_windows.bat`](install_windows.bat) from either Command Prompt or PowerShell. It asks for the Conda environment name, creates it when needed, reuses an existing Python 3.12 environment, installs the editable GUI package, and verifies the imports. The batch file uses `conda run`, so it works even though a child `.bat` cannot permanently activate its parent PowerShell or Command Prompt session. Open a new prompt and activate the named environment after the installer finishes.
+
 ```bat
 cd /d C:\Projects\ai-engineering-assessment-studio
 conda create -n ai-assessment-studio python=3.12 -y
