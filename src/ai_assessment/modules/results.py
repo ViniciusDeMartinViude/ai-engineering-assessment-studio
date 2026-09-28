@@ -38,7 +38,7 @@ class ResultsPage(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(22, 18, 22, 18)
         root.setSpacing(9)
-        eyebrow = QLabel("RESULTS / M6")
+        eyebrow = QLabel("RESULTS")
         eyebrow.setObjectName("resultsEyebrow")
         title = QLabel("Results Studio")
         title.setObjectName("resultsTitle")

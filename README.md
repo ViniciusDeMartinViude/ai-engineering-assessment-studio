@@ -4,6 +4,9 @@ AI Engineering date-fruit training and assessment workstation. M1 provides a PyS
 
 The M1-M8 shell does not connect to a competition organizer server by default. Local events remain pending until a future organizer integration records a server acknowledgement. Calibration is a 2D planar mapping tool only, Vision Studio never sends robot commands or performs automatic sorting, Dataset Studio does not train YOLO, Robot Studio does not sort live detections, Results Studio does not show hidden organizer scores, the IDE never arms the physical robot, and the AI page never calls OpenAI directly.
 
+For a student-facing walkthrough with Windows screenshots, see [docs/STUDENT_VISUAL_GUIDE.md](docs/STUDENT_VISUAL_GUIDE.md).
+The same guide is available as a printable [PDF](output/pdf/student-visual-guide.pdf).
+
 Read [Architecture v1](docs/ARCHITECTURE_V1.md) and [AGENTS.md](AGENTS.md) for the project boundaries and acceptance gates.
 
 ## Windows setup

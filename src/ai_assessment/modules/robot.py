@@ -88,7 +88,7 @@ class RobotPage(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(22, 18, 22, 18)
         root.setSpacing(9)
-        eyebrow = QLabel("ROBOT / M5")
+        eyebrow = QLabel("ROBOT")
         eyebrow.setObjectName("robotEyebrow")
         title = QLabel("Robot Studio")
         title.setObjectName("robotTitle")
@@ -207,7 +207,7 @@ class RobotPage(QWidget):
         layout = QGridLayout(group)
         self.trial_class = QComboBox()
         self.mapping_table = QTableWidget(0, 2)
-        self.mapping_table.setHorizontalHeaderLabels(["M3 class", "Destination"])
+        self.mapping_table.setHorizontalHeaderLabels(["Class", "Destination"])
         self.mapping_table.setMaximumHeight(150)
         self.mapping_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.trial_source = QComboBox()
@@ -439,7 +439,7 @@ class RobotPage(QWidget):
             except (OSError, json.JSONDecodeError, KeyError, TypeError):
                 names = []
         self.trial_class.clear()
-        self.trial_class.addItems(names or ["No exported M3 classes found"])
+        self.trial_class.addItems(names or ["No exported classes found"])
         self.trial_class.setEnabled(bool(names))
         self.mapping_table.setRowCount(0)
         for index, name in enumerate(names):

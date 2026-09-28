@@ -123,15 +123,9 @@ def main(argv: list[str] | None = None) -> int:
             title.setObjectName("pageTitle")
             title.setAlignment(Qt.AlignmentFlag.AlignLeft)
 
-            milestone = QLabel(definition.milestone)
-            milestone.setObjectName("milestone")
-            milestone.setFixedWidth(56)
-            milestone.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
             heading = QHBoxLayout()
             heading.addWidget(title)
             heading.addStretch(1)
-            heading.addWidget(milestone)
 
             summary = QLabel(definition.summary)
             summary.setWordWrap(True)
@@ -294,13 +288,6 @@ def main(argv: list[str] | None = None) -> int:
         }
         #pageTitle {
             font-size: 30px;
-            font-weight: 700;
-        }
-        #milestone {
-            background: #174c36;
-            color: white;
-            border-radius: 6px;
-            padding: 5px;
             font-weight: 700;
         }
         #summary {

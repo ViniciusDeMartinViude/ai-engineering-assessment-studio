@@ -79,17 +79,17 @@ class TrainingPage(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(22, 18, 22, 18)
         root.setSpacing(9)
-        eyebrow = QLabel("TRAINING / M6")
+        eyebrow = QLabel("TRAINING")
         eyebrow.setObjectName("trainingEyebrow")
         title = QLabel("Training Studio")
         title.setObjectName("trainingTitle")
-        subtitle = QLabel("Record up to four distinct local YOLO experiments against the selected M3 subset. Validation results are candidate-visible only.")
+        subtitle = QLabel("Record up to four distinct local YOLO experiments against the selected four-class subset. Validation results are candidate-visible only.")
         subtitle.setWordWrap(True)
         subtitle.setObjectName("trainingSubtitle")
         root.addWidget(eyebrow)
         root.addWidget(title)
         root.addWidget(subtitle)
-        self.status = QLabel("Choose a complete M3 subset and local .pt base weights.")
+        self.status = QLabel("Choose a complete four-class subset and local .pt base weights.")
         self.status.setObjectName("trainingStatus")
         root.addWidget(self.status)
 
@@ -104,7 +104,7 @@ class TrainingPage(QWidget):
         self.weight_edit.setPlaceholderText("Existing local .pt base weights; no downloads")
         self.weight_browse = QPushButton("Browse weights")
         self.weight_browse.clicked.connect(self._browse_weights)
-        source_layout.addWidget(QLabel("M3 subset"), 0, 0)
+        source_layout.addWidget(QLabel("Subset"), 0, 0)
         source_layout.addWidget(self.subset_combo, 0, 1, 1, 2)
         source_layout.addWidget(self.refresh_subset_button, 0, 3)
         source_layout.addWidget(QLabel("Base weights"), 1, 0)
@@ -223,7 +223,7 @@ class TrainingPage(QWidget):
     def _subset_changed(self, *_args: Any) -> None:
         raw = self.subset_combo.currentData()
         if not raw:
-            self.status.setText("No complete M3 subset found under the candidate workspace.")
+            self.status.setText("No complete four-class subset found under the candidate workspace.")
             return
         try:
             value = validate_subset(self.workspace, Path(str(raw)))
@@ -240,7 +240,7 @@ class TrainingPage(QWidget):
         raw_subset = self.subset_combo.currentData()
         raw_weight = self.weight_edit.text().strip()
         if not raw_subset or not raw_weight:
-            self.status.setText("Choose a complete M3 subset and an existing local .pt file first.")
+            self.status.setText("Choose a complete four-class subset and an existing local .pt file first.")
             return
         config = TrainingConfig(
             experiment_index=self.experiment_combo.currentIndex() + 1,

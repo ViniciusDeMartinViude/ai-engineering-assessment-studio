@@ -133,7 +133,7 @@ class DatasetPage(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(22, 18, 22, 18)
         root.setSpacing(10)
-        eyebrow = QLabel("DATASET / M3")
+        eyebrow = QLabel("DATASET")
         eyebrow.setObjectName("datasetEyebrow")
         title = QLabel("Dataset Studio")
         title.setObjectName("datasetTitle")

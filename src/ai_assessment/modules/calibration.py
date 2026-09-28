@@ -279,7 +279,7 @@ class CalibrationPage(QWidget):
         root.setContentsMargins(22, 18, 22, 18)
         root.setSpacing(10)
 
-        eyebrow = QLabel("VISION  /  ROBOTICS  /  M2")
+        eyebrow = QLabel("VISION  /  ROBOTICS")
         eyebrow.setObjectName("calibrationEyebrow")
         title = QLabel("Camera to robot calibration")
         title.setObjectName("calibrationTitle")

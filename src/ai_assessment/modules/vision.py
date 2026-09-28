@@ -203,7 +203,7 @@ class VisionPage(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(22, 18, 22, 18)
         root.setSpacing(9)
-        eyebrow = QLabel("VISION / M4")
+        eyebrow = QLabel("VISION")
         eyebrow.setObjectName("visionEyebrow")
         title = QLabel("Vision Studio")
         title.setObjectName("visionTitle")
@@ -691,11 +691,11 @@ class VisionPage(QWidget):
         path = self.workspace.resolve_inside("calibration", "calibration.json")
         if not path.is_file():
             self._calibration = None
-            self.calibration_warning.setText("No saved M2 calibration found. Robot coordinates are not shown.")
+            self.calibration_warning.setText("No saved calibration found. Robot coordinates are not shown.")
             return
         try:
             self._calibration = CalibrationService.load(path)
-            self.calibration_warning.setText("Saved M2 calibration loaded; geometry will be checked per frame.")
+            self.calibration_warning.setText("Saved calibration loaded; geometry will be checked per frame.")
         except (OSError, CalibrationError, ValueError) as error:
             self._calibration = None
             self.calibration_warning.setText(f"Calibration unavailable: {error}")

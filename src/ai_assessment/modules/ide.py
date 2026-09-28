@@ -146,11 +146,8 @@ class IDEPage(QWidget):
         heading = QHBoxLayout()
         title = QLabel("IDE")
         title.setObjectName("pageTitle")
-        badge = QLabel("M7")
-        badge.setObjectName("milestone")
         heading.addWidget(title)
         heading.addStretch(1)
-        heading.addWidget(badge)
         root.addLayout(heading)
         summary = QLabel(
             "Edit and run candidate-owned Python files from workspace/src. Runs are local process executions, not an OS security sandbox."
