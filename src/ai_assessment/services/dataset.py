@@ -479,7 +479,6 @@ class DatasetService:
                 exclusions[split_key] = split_exclusions
                 exported_counts[split_key] = split_exported
             output_yaml = {
-                "path": ".",
                 "train": "train/images",
                 "val": f"{scan.splits['val'].directory_name}/images",
                 "test": f"{scan.splits['test'].directory_name}/images",
