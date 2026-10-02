@@ -409,11 +409,12 @@ class TrainingService:
             records = self.list_runs()
             if any(record.get("status") == "running" for record in records):
                 raise TrainingBusyError("A previous training job is still recorded as running; inspect or recover it before starting another.")
-            if len(records) >= 4:
-                raise TrainingError("This workspace already contains four recorded experiment runs.")
+            completed_runs = [record for record in records if record.get("status") == "completed"]
+            if len(completed_runs) >= 4:
+                raise TrainingError("This workspace already contains four completed experiment runs.")
             fingerprint = self._config_fingerprint(config, dataset, weight_hash)
-            if any(record.get("config_fingerprint") == fingerprint for record in records):
-                raise TrainingError("This experiment configuration was already recorded; change a parameter before starting another run.")
+            if any(record.get("config_fingerprint") == fingerprint for record in completed_runs):
+                raise TrainingError("This experiment configuration was already completed; change a parameter before starting another run.")
             run_id = f"run_{config.experiment_index:02d}_{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}_{uuid.uuid4().hex[:6]}"
             model_dir = self.workspace.resolve_inside("models", run_id)
             result_dir = self.workspace.resolve_inside("results", "training", run_id)
