@@ -82,6 +82,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--workers", type=int, required=True)
     parser.add_argument("--patience", type=int, required=True)
     parser.add_argument("--device", default="")
+    parser.add_argument("--amp", action="store_true")
     args = parser.parse_args(argv)
     from ultralytics import YOLO
 
@@ -100,10 +101,12 @@ def main(argv: list[str] | None = None) -> int:
         "name": args.name,
         "exist_ok": False,
         "verbose": True,
+        "amp": args.amp,
     }
     if args.device:
         train_kwargs["device"] = args.device
     print(f"Starting train with local weights: {args.weights}", flush=True)
+    print(f"Training precision: {'AMP' if args.amp else 'FP32 (AMP check disabled)'}", flush=True)
     model.train(**train_kwargs)
     print("Training complete; validating on split=val", flush=True)
     val_kwargs = {"data": str(resolved_data), "split": "val", "project": args.project, "name": f"{args.name}_val", "exist_ok": False, "plots": True, "verbose": True}
@@ -124,4 +127,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
