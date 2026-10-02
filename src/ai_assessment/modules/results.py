@@ -6,9 +6,10 @@ import json
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QPixmap
+from PySide6.QtCore import Qt, QUrl
+from PySide6.QtGui import QDesktopServices, QPixmap
 from PySide6.QtWidgets import (
+    QApplication,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -59,6 +60,14 @@ class ResultsPage(QWidget):
         self.select_button.clicked.connect(self._select_model)
         actions.addWidget(refresh)
         actions.addWidget(self.select_button)
+        self.open_run_button = QPushButton("Open run folder")
+        self.open_run_button.clicked.connect(self._open_run_folder)
+        self.open_run_button.setEnabled(False)
+        actions.addWidget(self.open_run_button)
+        self.copy_weights_button = QPushButton("Copy best.pt path")
+        self.copy_weights_button.clicked.connect(self._copy_weights_path)
+        self.copy_weights_button.setEnabled(False)
+        actions.addWidget(self.copy_weights_button)
         actions.addStretch(1)
         root.addLayout(actions)
 
@@ -120,6 +129,8 @@ class ResultsPage(QWidget):
             self.status.setText(str(error))
             return
         selected_run = selected.get("run_id") if selected else None
+        previous = self._selected_record()
+        previous_run = previous.get("run_id") if previous else None
         self.runs_table.setRowCount(0)
         for record in self._records:
             row = self.runs_table.rowCount()
@@ -138,6 +149,12 @@ class ResultsPage(QWidget):
             ]
             for column, value in enumerate(values):
                 self.runs_table.setItem(row, column, QTableWidgetItem(value))
+        for row, record in enumerate(self._records):
+            if record.get("run_id") == previous_run:
+                self.runs_table.selectRow(row)
+                break
+        if not self.runs_table.selectedItems() and self._records:
+            self.runs_table.selectRow(0)
         if selected_run:
             self.status.setText(f"Production model selected from {selected_run}. Candidate-visible only; no organizer lock or signature.")
         elif self._records:
@@ -156,11 +173,45 @@ class ResultsPage(QWidget):
         run_id = selected[0].text()
         return next((record for record in self._records if record.get("run_id") == run_id), None)
 
+    def _record_path(self, record: dict[str, Any], key: str) -> Path | None:
+        raw = record.get("paths", {}).get(key)
+        if not isinstance(raw, str) or not raw:
+            return None
+        try:
+            return self.workspace.resolve_inside(raw)
+        except ValueError:
+            return None
+
+    def _best_checkpoint(self, record: dict[str, Any]) -> Path | None:
+        for item in record.get("checkpoints", []) or []:
+            raw = item.get("path") if isinstance(item, dict) else None
+            if not isinstance(raw, str) or not raw.replace("\\", "/").lower().endswith("/weights/best.pt"):
+                continue
+            try:
+                path = self.workspace.resolve_inside(raw)
+            except ValueError:
+                continue
+            if path.is_file():
+                return path
+        return None
+
     def _show_details(self) -> None:
         record = self._selected_record()
         self.per_class.setRowCount(0)
+        self.open_run_button.setEnabled(False)
+        self.copy_weights_button.setEnabled(False)
         if record is None:
+            self.detail_label.setText("Select a completed run.")
+            self.artifact_view.clear()
+            self.confusion_preview.setPixmap(QPixmap())
+            self.confusion_preview.setText("Confusion matrix: unavailable")
             return
+        model_dir = self._record_path(record, "model_dir")
+        result_dir = self._record_path(record, "result_dir")
+        log_path = self._record_path(record, "log")
+        best = self._best_checkpoint(record)
+        self.open_run_button.setEnabled(model_dir is not None and model_dir.is_dir())
+        self.copy_weights_button.setEnabled(best is not None)
         metrics = record.get("metrics", {}) or {}
         self.detail_label.setText(
             f"Run {record.get('run_id')} | status={record.get('status')} | "
@@ -176,8 +227,10 @@ class ResultsPage(QWidget):
         curves = metrics.get("loss_curve", []) or []
         self.artifact_view.setPlainText(
             "\n".join(json_line for json_line in [
-                f"model_dir: {record.get('paths', {}).get('model_dir', 'unavailable')}",
-                f"log: {record.get('paths', {}).get('log', 'unavailable')}",
+                f"Training files and plots: {model_dir or 'unavailable'}",
+                f"Best weights: {best or 'unavailable'}",
+                f"Run records: {result_dir or 'unavailable'}",
+                f"Training log: {log_path or 'unavailable'}",
                 f"checkpoints: {record.get('checkpoints', [])}",
                 f"loss_curve_rows: {len(curves)}",
                 f"loss_curve_tail: {json.dumps(curves[-5:], sort_keys=True) if curves else 'unavailable'}",
@@ -193,6 +246,24 @@ class ResultsPage(QWidget):
             self.confusion_preview.setPixmap(QPixmap())
             self.confusion_preview.setText("Confusion matrix: unavailable")
 
+    def _open_run_folder(self) -> None:
+        record = self._selected_record()
+        folder = self._record_path(record, "model_dir") if record else None
+        if folder is None or not folder.is_dir():
+            self.status.setText("The selected run folder is missing. Check the workspace and refresh results.")
+            return
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder))):
+            self.status.setText(f"Could not open the run folder: {folder}")
+
+    def _copy_weights_path(self) -> None:
+        record = self._selected_record()
+        path = self._best_checkpoint(record) if record else None
+        if path is None:
+            self.status.setText("This run has no available best.pt checkpoint.")
+            return
+        QApplication.clipboard().setText(str(path))
+        self.status.setText(f"Copied checkpoint path: {path}")
+
     def _select_model(self) -> None:
         record = self._selected_record()
         if record is None:
@@ -203,8 +274,8 @@ class ResultsPage(QWidget):
             return
         try:
             selected_path = self.service.select_model(str(record["run_id"]))
-            self.status.setText(f"Selected {selected_path.name} from {record['run_id']}; Vision can load this local .pt path.")
             self.refresh()
+            self.status.setText(f"Selected checkpoint for Vision: {selected_path}")
         except TrainingError as error:
             self.status.setText(f"Model selection failed: {error}")
 
