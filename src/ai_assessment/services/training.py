@@ -73,6 +73,7 @@ class TrainingConfig:
     patience: int = 20
     run_label: str = ""
     resume: bool = False
+    amp: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -86,6 +87,7 @@ class TrainingConfig:
             "patience": self.patience,
             "run_label": self.run_label,
             "resume": self.resume,
+            "amp": self.amp,
         }
 
 
@@ -448,6 +450,8 @@ class TrainingService:
         ]
         if config.device.strip():
             args.extend(["--device", config.device.strip()])
+        if config.amp:
+            args.append("--amp")
         return args
 
     def start_training(
@@ -685,4 +689,3 @@ class TrainingJob:
         self.cancel_requested = False
         self.last_lines: list[str] = []
         self.thread: threading.Thread | None = None
-

@@ -44,6 +44,7 @@ class DatasetPathTests(unittest.TestCase):
 
     def test_train_and_val_receive_the_same_resolved_yaml(self) -> None:
         calls: list[tuple[str, Path]] = []
+        train_settings: list[dict] = []
 
         class FakeYOLO:
             def __init__(self, weights: str) -> None:
@@ -51,6 +52,7 @@ class DatasetPathTests(unittest.TestCase):
 
             def train(self, **kwargs):
                 self._check("train", kwargs)
+                train_settings.append(kwargs)
 
             def val(self, **kwargs):
                 self._check("val", kwargs)
@@ -77,6 +79,7 @@ class DatasetPathTests(unittest.TestCase):
         with patch.dict(sys.modules, {"ultralytics": fake_ultralytics}):
             self.assertEqual(main(args), 0)
         self.assertEqual([kind for kind, _ in calls], ["train", "val"])
+        self.assertFalse(train_settings[0]["amp"])
         self.assertEqual(calls[0][1], calls[1][1])
         self.assertEqual(json.loads(result_json.read_text(encoding="utf-8"))["metrics"]["metrics/mAP50(B)"], 0.5)
         self.assertEqual(self.source.read_text(encoding="utf-8"), self.original)
