@@ -5,6 +5,7 @@ import tempfile
 import threading
 import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
 
@@ -14,6 +15,7 @@ from ai_assessment.services.training import (
     TrainingError,
     TrainingService,
     parse_metrics,
+    resolve_base_weights,
     sha256_file,
     validate_subset,
 )
@@ -266,3 +268,23 @@ class M6TrainingTests(unittest.TestCase):
                 service.start_training(self.subset, Path("yolo11s.pt"), TrainingConfig(1))
         self.assertFalse(service.list_runs())
         self.assertFalse((self.workspace.root / "models" / "base_weights" / "yolo11s.pt").is_file())
+
+    def test_concurrent_lookups_write_one_cached_checkpoint(self) -> None:
+        calls: list[Path] = []
+
+        def fake_download(target: Path) -> Path:
+            calls.append(target)
+            time.sleep(0.05)
+            target.write_bytes(b"single checkpoint")
+            return target
+
+        with patch("ai_assessment.services.training._download_official_weights", side_effect=fake_download):
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                futures = [
+                    executor.submit(resolve_base_weights, self.workspace, Path("yolo26s.pt"))
+                    for _ in range(2)
+                ]
+                results = [future.result() for future in futures]
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(results[0][0], results[1][0])
+        self.assertEqual({source["origin"] for _, source in results}, {"ultralytics_official_download", "workspace_cache"})
