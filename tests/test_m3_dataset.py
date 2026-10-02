@@ -128,6 +128,7 @@ class DatasetServiceTests(unittest.TestCase):
         )
         self.assertEqual(output_yaml["names"], ["Meneifi", "Galaxy", "Ajwa", "Medjool"])
         self.assertEqual(output_yaml["nc"], 4)
+        self.assertNotIn("path", output_yaml)
 
         for file_entry in result.manifest["files"]:
             path = result.output_dir / file_entry["path"]
