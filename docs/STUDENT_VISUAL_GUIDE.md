@@ -46,7 +46,7 @@ The export keeps split membership, remaps selected classes to IDs 0 through 3, a
 ![Training page](assets/student-guide/03-training.png)
 
 1. Choose the exported four-class subset.
-2. Browse to an existing local `.pt` base-weight file. The application does not download weights.
+2. Browse to an existing local `.pt` base-weight file, or type an official detection name such as `yolo26n.pt`. On **Start training**, the app downloads a missing official model to `models/base_weights/` when the competition network allows it and reuses the cached file on later runs.
 3. Choose one experiment slot and set its parameters, seed, device, and epochs.
 4. Press **Start training**. The UI remains responsive while the child process runs.
 5. Follow the live output and status. **Cancel training** keeps the run record and logs, but it is not counted as a completed experiment.

@@ -5,7 +5,9 @@ import tempfile
 import threading
 import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from unittest.mock import patch
 
 from ai_assessment.core.workspace import CandidateWorkspace
 from ai_assessment.services.training import (
@@ -13,6 +15,7 @@ from ai_assessment.services.training import (
     TrainingError,
     TrainingService,
     parse_metrics,
+    resolve_base_weights,
     sha256_file,
     validate_subset,
 )
@@ -220,3 +223,68 @@ class M6TrainingTests(unittest.TestCase):
         with self.assertRaises(TrainingError):
             service.select_production_model(run.run_id, self.weights)
 
+    def test_official_name_downloads_once_and_records_exact_cached_file(self) -> None:
+        calls: list[Path] = []
+
+        def fake_download(target: Path) -> Path:
+            calls.append(target)
+            target.write_bytes(b"official checkpoint")
+            return target
+
+        service = TrainingService(self.workspace, process_factory=self.factory)
+        output: list[str] = []
+        with patch("ai_assessment.services.training._download_official_weights", side_effect=fake_download):
+            first = service.start_training(
+                self.subset, Path("yolo26n.pt"), TrainingConfig(1), on_output=output.append
+            )
+            self.wait_for_completion(service)
+        cached = self.workspace.root / "models" / "base_weights" / "yolo26n.pt"
+        self.assertEqual(calls, [cached])
+        record = service.load_run(first.run_id)
+        self.assertEqual(record["base_weights"]["path"], str(cached))
+        self.assertEqual(record["base_weights"]["sha256"], sha256_file(cached))
+        self.assertEqual(record["base_weights"]["origin"], "ultralytics_official_download")
+        self.assertEqual(record["process_args"][record["process_args"].index("--weights") + 1], str(cached))
+        self.assertTrue(any("Downloading" in line for line in output))
+        self.assertTrue(any(event.event_type == "training.base_weights.downloaded" for event in self.workspace.events.read_events()))
+
+        with patch("ai_assessment.services.training._download_official_weights", side_effect=AssertionError("redownload")):
+            second = service.start_training(self.subset, Path("yolo26n.pt"), TrainingConfig(2))
+            self.wait_for_completion(service)
+        self.assertEqual(service.load_run(second.run_id)["base_weights"]["origin"], "workspace_cache")
+
+    def test_unknown_name_and_url_never_trigger_download(self) -> None:
+        service = TrainingService(self.workspace, process_factory=self.factory)
+        with patch("ai_assessment.services.training._download_official_weights", side_effect=AssertionError("network")):
+            for raw in ("unapproved.pt", "https://example.com/model.pt", "other/yolo26n.pt"):
+                with self.subTest(raw=raw), self.assertRaises(TrainingError):
+                    service.start_training(self.subset, Path(raw), TrainingConfig(1))
+        self.assertFalse(service.list_runs())
+
+    def test_download_failure_is_visible_and_does_not_start_a_run(self) -> None:
+        service = TrainingService(self.workspace, process_factory=self.factory)
+        with patch("ai_assessment.services.training._download_official_weights", side_effect=ConnectionError("offline")):
+            with self.assertRaisesRegex(TrainingError, "GitHub release downloads"):
+                service.start_training(self.subset, Path("yolo11s.pt"), TrainingConfig(1))
+        self.assertFalse(service.list_runs())
+        self.assertFalse((self.workspace.root / "models" / "base_weights" / "yolo11s.pt").is_file())
+
+    def test_concurrent_lookups_write_one_cached_checkpoint(self) -> None:
+        calls: list[Path] = []
+
+        def fake_download(target: Path) -> Path:
+            calls.append(target)
+            time.sleep(0.05)
+            target.write_bytes(b"single checkpoint")
+            return target
+
+        with patch("ai_assessment.services.training._download_official_weights", side_effect=fake_download):
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                futures = [
+                    executor.submit(resolve_base_weights, self.workspace, Path("yolo26s.pt"))
+                    for _ in range(2)
+                ]
+                results = [future.result() for future in futures]
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(results[0][0], results[1][0])
+        self.assertEqual({source["origin"] for _, source in results}, {"ultralytics_official_download", "workspace_cache"})
