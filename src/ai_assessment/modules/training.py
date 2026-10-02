@@ -89,7 +89,7 @@ class TrainingPage(QWidget):
         root.addWidget(eyebrow)
         root.addWidget(title)
         root.addWidget(subtitle)
-        self.status = QLabel("Choose a complete four-class subset and local .pt base weights.")
+        self.status = QLabel("Choose a four-class subset and an existing .pt file or an official model name.")
         self.status.setObjectName("trainingStatus")
         root.addWidget(self.status)
 
@@ -101,7 +101,8 @@ class TrainingPage(QWidget):
         self.refresh_subset_button = QPushButton("Refresh subsets")
         self.refresh_subset_button.clicked.connect(self._refresh_subsets)
         self.weight_edit = QLineEdit()
-        self.weight_edit.setPlaceholderText("Existing local .pt base weights; no downloads")
+        self.weight_edit.setPlaceholderText("Local .pt path or official name, e.g. yolo26n.pt")
+        self.weight_edit.setToolTip("Type yolo26n.pt, yolo11s.pt, or yolov8n.pt to download once if missing; or browse a local .pt file.")
         self.weight_browse = QPushButton("Browse weights")
         self.weight_browse.clicked.connect(self._browse_weights)
         source_layout.addWidget(QLabel("Subset"), 0, 0)
@@ -240,7 +241,7 @@ class TrainingPage(QWidget):
         raw_subset = self.subset_combo.currentData()
         raw_weight = self.weight_edit.text().strip()
         if not raw_subset or not raw_weight:
-            self.status.setText("Choose a complete four-class subset and an existing local .pt file first.")
+            self.status.setText("Choose a complete four-class subset and a local .pt file or official model name first.")
             return
         config = TrainingConfig(
             experiment_index=self.experiment_combo.currentIndex() + 1,
@@ -255,7 +256,7 @@ class TrainingPage(QWidget):
         self._set_running(True)
         self.log_view.clear()
         self.progress.setValue(0)
-        self.status.setText("Validating inputs and starting the child training process...")
+        self.status.setText("Checking base weights (downloading an official model if needed), then starting training...")
         task = TrainingStartTask(
             lambda: self.service.start_training(
                 Path(str(raw_subset)),
