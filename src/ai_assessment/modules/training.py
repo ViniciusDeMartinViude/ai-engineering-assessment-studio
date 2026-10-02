@@ -8,6 +8,7 @@ from typing import Any
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Qt, Signal, Slot
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QFileDialog,
     QFormLayout,
@@ -125,6 +126,9 @@ class TrainingPage(QWidget):
         self.patience = self._spin(0, 1000, 20)
         self.device = QLineEdit()
         self.device.setPlaceholderText("blank = Ultralytics default, e.g. 0 or cpu")
+        self.amp = QCheckBox("Enable AMP (may download yolo26n.pt for checks)")
+        self.amp.setChecked(False)
+        self.amp.setToolTip("Off: FP32 still uses the selected GPU. On: Ultralytics may download yolo26n.pt for its AMP check.")
         form.addRow("Recorded slot", self.experiment_combo)
         form.addRow("Epochs", self.epochs)
         form.addRow("Image size", self.image_size)
@@ -133,6 +137,7 @@ class TrainingPage(QWidget):
         form.addRow("Workers", self.workers)
         form.addRow("Patience", self.patience)
         form.addRow("Device", self.device)
+        form.addRow("Mixed precision", self.amp)
         root.addWidget(config)
 
         actions = QHBoxLayout()
@@ -250,6 +255,7 @@ class TrainingPage(QWidget):
             batch=self.batch.value(),
             seed=self.seed.value(),
             device=self.device.text().strip(),
+            amp=self.amp.isChecked(),
             workers=self.workers.value(),
             patience=self.patience.value(),
         )
@@ -345,4 +351,3 @@ class TrainingPage(QWidget):
     def shutdown(self) -> None:
         if self.current_run_id:
             self.service.cancel_active(self.current_run_id)
-
