@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -292,3 +294,45 @@ class M6TrainingTests(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         self.assertEqual(results[0][0], results[1][0])
         self.assertEqual({source["origin"] for _, source in results}, {"ultralytics_official_download", "workspace_cache"})
+
+    def test_monitor_survives_unexpected_output_byte(self) -> None:
+        def child_factory(**kwargs):
+            self.assertEqual(kwargs["encoding"], "utf-8")
+            self.assertEqual(kwargs["errors"], "replace")
+            self.assertEqual(kwargs["args"][1:3], ["-X", "utf8"])
+            args = kwargs["args"]
+            model_dir = Path(args[args.index("--project") + 1]) / args[args.index("--name") + 1]
+            (model_dir / "weights").mkdir(parents=True)
+            (model_dir / "weights" / "best.pt").write_bytes(b"checkpoint")
+            kwargs["args"] = [
+                sys.executable, "-X", "utf8", "-u", "-c",
+                "import os; os.write(1, b'valid\\ninvalid:\\x81\\n')",
+            ]
+            return subprocess.Popen(**kwargs)
+
+        service = TrainingService(self.workspace, process_factory=child_factory)
+        run = service.start_training(self.subset, self.weights, TrainingConfig(1))
+        self.wait_for_completion(service)
+        record = service.load_run(run.run_id)
+        self.assertEqual(record["status"], "completed", record["error"])
+        self.assertIn("invalid:\ufffd", run.log_path.read_text(encoding="utf-8"))
+
+    def test_monitor_failure_stops_child_before_marking_run_failed(self) -> None:
+        processes: list[FakeProcess] = []
+
+        def broken_stream():
+            yield "before failure\n"
+            raise UnicodeDecodeError("charmap", b"\x81", 0, 1, "undefined")
+
+        def child_factory(**kwargs):
+            process = FakeProcess(list(kwargs["args"]), block=True)
+            process.stdout = broken_stream()
+            processes.append(process)
+            return process
+
+        service = TrainingService(self.workspace, process_factory=child_factory)
+        run = service.start_training(self.subset, self.weights, TrainingConfig(1))
+        self.wait_for_completion(service)
+        self.assertTrue(processes[0].terminated)
+        self.assertEqual(service.load_run(run.run_id)["status"], "failed")
+        self.assertIn("Training monitor failed", service.load_run(run.run_id)["error"])
