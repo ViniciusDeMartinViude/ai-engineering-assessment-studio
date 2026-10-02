@@ -28,6 +28,15 @@ TRAINING_SCHEMA_VERSION = "m6.training.v1"
 RUN_RECORD_NAME = "run.json"
 _PROGRESS_PATTERN = re.compile(r"(?:Epoch\s+)?(\d+)\s*/\s*(\d+)", re.IGNORECASE)
 
+# Official Ultralytics detection checkpoints accepted by name. Keep this list
+# narrow: arbitrary paths and URLs must never trigger a network request.
+OFFICIAL_DETECTION_MODELS = frozenset(
+    f"{family}{size}.pt"
+    for family in ("yolo26", "yolo11", "yolov8")
+    for size in "nsmlx"
+)
+OFFICIAL_WEIGHTS_REPO = "ultralytics/assets"
+
 
 class TrainingError(ValueError):
     """Raised when a run cannot be validated or completed safely."""
@@ -220,10 +229,63 @@ def validate_subset(workspace: CandidateWorkspace, subset_root: Path) -> Dataset
 def validate_base_weights(workspace: CandidateWorkspace, path: Path) -> Path:
     resolved = path.expanduser().resolve()
     if resolved.suffix.lower() != ".pt":
-        raise TrainingError("Training base weights must be a local .pt file.")
+        raise TrainingError("Training base weights must be a .pt file.")
     if not resolved.is_file():
         raise TrainingError(f"Base-weight file does not exist: {resolved}")
+    if resolved.stat().st_size == 0:
+        raise TrainingError(f"Base-weight file is empty: {resolved}")
     return resolved
+
+
+def _download_official_weights(target: Path) -> Path:
+    """Use Ultralytics' release asset downloader without loading a model."""
+    from ultralytics.utils.downloads import attempt_download_asset
+
+    return Path(attempt_download_asset(target, repo=OFFICIAL_WEIGHTS_REPO))
+
+
+def resolve_base_weights(
+    workspace: CandidateWorkspace,
+    requested: Path,
+    *,
+    on_output: Callable[[str], None] | None = None,
+) -> tuple[Path, dict[str, Any]]:
+    """Resolve a local .pt or cache an official detection checkpoint by name."""
+    raw = str(requested).strip()
+    path = Path(raw).expanduser()
+    if path.is_file():
+        return validate_base_weights(workspace, path), {"origin": "local_file", "requested": raw}
+    if path.parent != Path(".") or path.name not in OFFICIAL_DETECTION_MODELS:
+        raise TrainingError(
+            f"Base weights not found: {raw}. Choose an existing local .pt file or "
+            "enter an official detection model name such as yolo26n.pt."
+        )
+    target = workspace.resolve_inside("models", "base_weights", path.name)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    downloaded = False
+    if not target.is_file():
+        if on_output:
+            on_output(f"Downloading official Ultralytics model {path.name} to {target} ...")
+        try:
+            actual = _download_official_weights(target).expanduser().resolve()
+        except Exception as error:
+            raise TrainingError(
+                f"Could not download {path.name} from official Ultralytics assets. "
+                "Allow GitHub release downloads on the router, or browse an existing local .pt file. "
+                f"Details: {error}"
+            ) from error
+        if actual != target or not target.is_file():
+            raise TrainingError(f"Official model download did not produce the expected file: {target}")
+        downloaded = True
+    resolved = validate_base_weights(workspace, target)
+    if on_output:
+        on_output(f"{'Downloaded' if downloaded else 'Using cached'} model: {resolved}")
+    return resolved, {
+        "origin": "ultralytics_official_download" if downloaded else "workspace_cache",
+        "requested": path.name,
+        "source_repo": OFFICIAL_WEIGHTS_REPO,
+        "downloaded_this_run": downloaded,
+    }
 
 
 def parse_metrics(result_dir: Path, runner_result: Path | None = None, *additional_dirs: Path) -> MetricsSummary:
@@ -400,8 +462,24 @@ class TrainingService:
         if config.experiment_index not in {1, 2, 3, 4}:
             raise TrainingError("Choose experiment 1, 2, 3, or 4.")
         dataset = validate_subset(self.workspace, subset_root)
-        weight = validate_base_weights(self.workspace, weight_path)
+        with self._jobs_lock:
+            if self.workspace.root in self._workspace_jobs:
+                raise TrainingBusyError("A training job is already active in this workspace.")
+            existing_records = self.list_runs()
+            if any(record.get("status") == "running" for record in existing_records):
+                raise TrainingBusyError("A previous training job is still recorded as running; inspect or recover it before starting another.")
+            if sum(record.get("status") == "completed" for record in existing_records) >= 4:
+                raise TrainingError("This workspace already contains four completed experiment runs.")
+        weight, weight_source = resolve_base_weights(self.workspace, weight_path, on_output=on_output)
         weight_hash = model_sha256(weight)
+        if weight_source.get("downloaded_this_run"):
+            self.workspace.record_event(
+                "training.base_weights.downloaded",
+                {"model_name": weight_source["requested"], "source_repo": OFFICIAL_WEIGHTS_REPO,
+                 "path": str(weight.relative_to(self.workspace.root)).replace("\\", "/"),
+                 "sha256": weight_hash, "bytes": weight.stat().st_size},
+                artifact_hashes={"base_weights": weight_hash},
+            )
         with self._jobs_lock:
             workspace_key = self.workspace.root
             if workspace_key in self._workspace_jobs:
@@ -442,7 +520,7 @@ class TrainingService:
                     "class_names": list(dataset.class_names),
                     "split_paths": dataset.split_paths,
                 },
-                "base_weights": {"path": str(weight), "sha256": weight_hash, "bytes": weight.stat().st_size},
+                "base_weights": {"path": str(weight), "sha256": weight_hash, "bytes": weight.stat().st_size, **weight_source},
                 "environment": {"python": sys.version, "platform": sys.platform, "packages": _package_versions()},
                 "process_args": args,
                 "paths": {
