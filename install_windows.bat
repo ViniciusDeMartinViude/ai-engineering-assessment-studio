@@ -89,16 +89,49 @@ if errorlevel 1 (
 del /q "%ENV_LIST%" >nul 2>nul
 
 echo.
-echo Installing the GUI dependencies and editable project package...
+echo Updating pip...
 call "%CONDA_CMD%" run --no-capture-output -n "%ENV_NAME%" python -m pip install --upgrade pip
 if errorlevel 1 goto :install_fail
+
+rem Ultralytics uses PyTorch. Install an official CUDA wheel before the GUI extra
+rem so a fresh or previously CPU-only environment can train on an NVIDIA GPU.
+set "CUDA_EXPECTED="
+where nvidia-smi >nul 2>nul
+if errorlevel 1 goto :cpu_setup
+nvidia-smi -L >nul 2>nul
+if errorlevel 1 goto :cpu_setup
+set "CUDA_EXPECTED=1"
+echo.
+echo NVIDIA GPU detected. Checking CUDA PyTorch in "%ENV_NAME%"...
+call "%CONDA_CMD%" run --no-capture-output -n "%ENV_NAME%" python -c "import torch, torchvision; assert torch.cuda.is_available(); torch.zeros(1, device='cuda:0'); print('CUDA PyTorch already works:', torch.__version__, torch.version.cuda, torch.cuda.get_device_name(0))"
+if not errorlevel 1 goto :install_gui
+echo Installing PyTorch 2.9.1 with CUDA 12.8 from the official PyTorch wheel index...
+call "%CONDA_CMD%" run --no-capture-output -n "%ENV_NAME%" python -m pip install --force-reinstall torch==2.9.1 torchvision==0.24.1 --index-url https://download.pytorch.org/whl/cu128
+if errorlevel 1 goto :cuda_fail
+call "%CONDA_CMD%" run --no-capture-output -n "%ENV_NAME%" python -c "import torch, torchvision; assert torch.version.cuda == '12.8' and torch.cuda.is_available(); torch.zeros(1, device='cuda:0'); print('CUDA ready:', torch.__version__, torch.cuda.get_device_name(0))"
+if errorlevel 1 goto :cuda_fail
+goto :install_gui
+
+:cpu_setup
+echo.
+echo No working NVIDIA driver/GPU detected by nvidia-smi. Installing for CPU use.
+echo To enable GPU training, install or update the NVIDIA driver and rerun this script.
+
+:install_gui
+echo.
+echo Installing the GUI dependencies and editable project package...
 call "%CONDA_CMD%" run --no-capture-output -n "%ENV_NAME%" python -m pip install -e ".[gui]"
 if errorlevel 1 goto :install_fail
 
 echo.
 echo Verifying the installation...
-call "%CONDA_CMD%" run --no-capture-output -n "%ENV_NAME%" python -c "import PySide6, ai_assessment; print('PySide6 and ai_assessment import successfully.')"
+call "%CONDA_CMD%" run --no-capture-output -n "%ENV_NAME%" python -c "import PySide6, ai_assessment, ultralytics, torch; print('Application and YOLO imports OK; PyTorch:', torch.__version__, 'CUDA:', torch.version.cuda, 'GPU available:', torch.cuda.is_available())"
 if errorlevel 1 goto :install_fail
+if not defined CUDA_EXPECTED goto :setup_complete
+call "%CONDA_CMD%" run --no-capture-output -n "%ENV_NAME%" python -c "import torch; assert torch.cuda.is_available(); torch.zeros(1, device='cuda:0'); print('YOLO training can use:', torch.cuda.get_device_name(0))"
+if errorlevel 1 goto :cuda_fail
+
+:setup_complete
 
 echo.
 echo ================================================
@@ -119,6 +152,13 @@ echo.
 echo No model weights or datasets were downloaded by this setup script.
 popd
 exit /b 0
+
+:cuda_fail
+echo.
+echo CUDA setup failed: the NVIDIA driver, GPU, or PyTorch wheel may be incompatible.
+echo Check nvidia-smi and the PyTorch Windows install selector for a matching CUDA build.
+echo This installer will not silently use CPU on a detected NVIDIA GPU.
+goto :fail
 
 :install_fail
 echo.
