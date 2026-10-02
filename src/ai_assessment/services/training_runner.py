@@ -7,6 +7,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 
 def _json_value(value: Any) -> Any:
     if isinstance(value, dict):
@@ -49,6 +51,23 @@ def _per_class(metrics: Any) -> list[dict[str, Any]]:
     return rows
 
 
+def _prepare_dataset_yaml(source_yaml: Path, result_dir: Path) -> Path:
+    """Build a run-owned YAML with an absolute dataset root.
+
+    Older M3 exports contain path: ., which Ultralytics resolves relative
+    to its configured datasets directory. Leave the exported YAML untouched.
+    """
+    source = source_yaml.expanduser().resolve(strict=True)
+    data = yaml.safe_load(source.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError(f"Dataset YAML must contain a mapping: {source}")
+    data["path"] = str(source.parent)
+    result_dir.mkdir(parents=True, exist_ok=True)
+    resolved_yaml = result_dir / "resolved_data.yaml"
+    resolved_yaml.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    return resolved_yaml
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--weights", required=True)
@@ -66,9 +85,11 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     from ultralytics import YOLO
 
+    resolved_data = _prepare_dataset_yaml(Path(args.data), Path(args.result_json).parent)
+    print(f"Resolved dataset root: {Path(args.data).resolve().parent}", flush=True)
     model = YOLO(args.weights)
     train_kwargs = {
-        "data": args.data,
+        "data": str(resolved_data),
         "epochs": args.epochs,
         "imgsz": args.imgsz,
         "batch": args.batch,
@@ -85,7 +106,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Starting train with local weights: {args.weights}", flush=True)
     model.train(**train_kwargs)
     print("Training complete; validating on split=val", flush=True)
-    val_kwargs = {"data": args.data, "split": "val", "project": args.project, "name": f"{args.name}_val", "exist_ok": False, "plots": True, "verbose": True}
+    val_kwargs = {"data": str(resolved_data), "split": "val", "project": args.project, "name": f"{args.name}_val", "exist_ok": False, "plots": True, "verbose": True}
     if args.device:
         val_kwargs["device"] = args.device
     validation = model.val(**val_kwargs)
