@@ -13,14 +13,20 @@ Read [Architecture v1](docs/ARCHITECTURE_V1.md) and [AGENTS.md](AGENTS.md) for t
 
 Use Anaconda Prompt or another shell where `conda` is initialized. The project baseline targets Python 3.12:
 
-The easiest setup is to run [`install_windows.bat`](install_windows.bat) from either Command Prompt or PowerShell. It asks for the Conda environment name, creates it when needed, reuses an existing Python 3.12 environment, installs the editable GUI package, and verifies the imports. The batch file uses `conda run`, so it works even though a child `.bat` cannot permanently activate its parent PowerShell or Command Prompt session. Open a new prompt and activate the named environment after the installer finishes.
+The easiest setup is to run [`install_windows.bat`](install_windows.bat) from either Command Prompt or PowerShell. It asks for the Conda environment name, creates it when needed, and reuses an existing Python 3.12 environment. On an NVIDIA PC where `nvidia-smi -L` works, it checks the existing PyTorch installation and, when needed, installs the official CUDA 12.8 PyTorch 2.9.1 / torchvision 0.24.1 wheels **before** the GUI package. It verifies CUDA device access and fails visibly if a detected GPU cannot run PyTorch. Without a working NVIDIA driver/GPU, it installs for CPU use. The batch file uses `conda run`, so open a new prompt and activate the named environment after it finishes. Rerun the installer with the same environment name to repair an earlier CPU-only installation.
+
+For manual setup on an NVIDIA PC with a compatible driver, use the same CUDA wheels:
 
 ```bat
 cd /d C:\Projects\ai-engineering-assessment-studio
 conda create -n ai-assessment-studio python=3.12 -y
 conda activate ai-assessment-studio
+python -m pip install --force-reinstall torch==2.9.1 torchvision==0.24.1 --index-url https://download.pytorch.org/whl/cu128
 python -m pip install -e ".[gui]"
+python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available(), torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU')"
 ```
+
+On a CPU-only PC, omit the CUDA PyTorch command. If CUDA verification fails, check the [PyTorch Windows selector](https://pytorch.org/get-started/locally/) for a wheel supported by your GPU and driver.
 
 If the repository is in a different folder, replace the `cd` path. The editable install makes the `ai_assessment` package available to the commands below.
 
@@ -111,7 +117,7 @@ Robot commands, responses, state changes, errors, and trials are written to the 
 
 Open **Training** in the sidebar after exporting an M3 subset. Select a `dataset/subset-*/` folder and an existing local `.pt` base-weight file. Training never downloads weights, changes the source dataset, or uses hidden assessment data. The service validates the complete four-class manifest, `train`, `val`, and `test` paths, and the contiguous class mapping before launching a child process. The child runs Ultralytics `train` and candidate-visible `val`; the preserved `test` split is not used by M6. The training runner writes a run-owned `resolved_data.yaml` with the selected subset's absolute root so Ultralytics finds its image folders regardless of the working directory. Existing M3 exports containing `path: .` work without re-exporting; the original subset and manifest remain unchanged.
 
-Prepare offline weights before the event by placing an approved `.pt` file on the Windows image or inside the candidate workspace `models` folder. The app only accepts a file that already exists. A GPU is optional for a smoke test; choose `cpu` in **Device** when appropriate, expect training to be slow, and install the CUDA-matched PyTorch build separately on an official GPU image. No model weights, dataset, workspace, or generated run output belongs in Git.
+Prepare offline weights before the event by placing an approved `.pt` file on the Windows image or inside the candidate workspace `models` folder. The app only accepts a file that already exists. Training **Device** is blank by default: Ultralytics chooses CUDA device 0 when PyTorch can access a GPU and CPU otherwise. Choose `cpu` explicitly for a CPU smoke test. The Windows installer sets up CUDA PyTorch first on detected NVIDIA machines; verify a full GPU training run on the official image before competition use. No model weights, dataset, workspace, or generated run output belongs in Git.
 
 Training allows four completed, distinct experiment configurations per workspace. Each run keeps its ID, slot, parameters, seed, manifest and base-weight hashes, environment/package versions, process arguments, timestamps, status, logs, metrics, and checkpoint hashes under `models/`, `results/training/`, and `logs/training/`. Failed and cancelled runs remain visible but do not occupy a completed experiment slot; they can be retried with the same configuration. Cancellation releases the Windows child process tree; a resumed run is not silently counted as a new experiment.
 
