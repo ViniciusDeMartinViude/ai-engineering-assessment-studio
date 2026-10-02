@@ -422,6 +422,8 @@ class TrainingService:
     def _build_args(self, config: TrainingConfig, dataset: DatasetValidation, weight_path: Path, model_dir: Path, runner_result: Path) -> list[str]:
         args = [
             self.python_executable,
+            "-X",
+            "utf8",
             "-u",
             "-m",
             "ai_assessment.services.training_runner",
@@ -562,7 +564,18 @@ class TrainingService:
             return TrainingRun(run_id, record_path, log_path, model_dir, result_dir, "running")
 
     def _launch(self, args: list[str]) -> ProcessLike:
-        kwargs: dict[str, Any] = {"args": args, "cwd": str(self.workspace.root), "stdout": subprocess.PIPE, "stderr": subprocess.STDOUT, "text": True, "bufsize": 1}
+        # The Windows locale can be cp1252 while YOLO prints UTF-8/ANSI output.
+        # Replace unexpected bytes so a log line cannot abort process supervision.
+        kwargs: dict[str, Any] = {
+            "args": args,
+            "cwd": str(self.workspace.root),
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.STDOUT,
+            "text": True,
+            "encoding": "utf-8",
+            "errors": "replace",
+            "bufsize": 1,
+        }
         if os.name == "nt":
             kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
         else:
@@ -575,21 +588,43 @@ class TrainingService:
             with job.log_path.open("a", encoding="utf-8") as log:
                 stream = job.process.stdout
                 if stream is not None:
-                    for raw_line in stream:
-                        line = str(raw_line).rstrip("\r\n")
-                        job.last_lines.append(line)
-                        del job.last_lines[:-8]
-                        log.write(line + "\n")
-                        log.flush()
-                        if job.on_output:
-                            job.on_output(line)
-                        match = _PROGRESS_PATTERN.search(line)
-                        if match and job.on_progress:
-                            job.on_progress(int(match.group(1)), int(match.group(2)))
+                    try:
+                        for raw_line in stream:
+                            line = str(raw_line).rstrip("\r\n")
+                            job.last_lines.append(line)
+                            del job.last_lines[:-8]
+                            log.write(line + "\n")
+                            log.flush()
+                            if job.on_output:
+                                job.on_output(line)
+                            match = _PROGRESS_PATTERN.search(line)
+                            if match and job.on_progress:
+                                job.on_progress(int(match.group(1)), int(match.group(2)))
+                    finally:
+                        close = getattr(stream, "close", None)
+                        if callable(close):
+                            close()
                 return_code = job.process.wait()
             self._finalize(job, return_code)
         except Exception as error:
-            self._finalize(job, -1, f"Training monitor failed: {error}")
+            detail = f"Training monitor failed: {error}"
+            try:
+                if job.process.poll() is None:
+                    if os.name == "nt" and getattr(job.process, "pid", None):
+                        subprocess.run(
+                            ["taskkill", "/PID", str(job.process.pid), "/T", "/F"],
+                            capture_output=True,
+                            check=False,
+                        )
+                    if job.process.poll() is None:
+                        job.process.terminate()
+                    try:
+                        job.process.wait()
+                    except Exception:
+                        job.process.kill()
+            except Exception as stop_error:
+                detail += f"; could not stop child process: {stop_error}"
+            self._finalize(job, -1, detail)
 
     def _finalize(self, job: "TrainingJob", return_code: int, monitor_error: str | None = None) -> None:
         record = job.record
