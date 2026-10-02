@@ -168,6 +168,23 @@ class M6TrainingTests(unittest.TestCase):
         self.assertTrue(record["error"])
         self.assertTrue(run.log_path.is_file())
 
+    def test_failed_run_can_retry_same_configuration(self) -> None:
+        def failed_factory(**kwargs) -> FakeProcess:
+            process = FakeProcess(list(kwargs["args"]), return_code=7)
+            self.processes.append(process)
+            return process
+
+        service = TrainingService(self.workspace, process_factory=failed_factory)
+        failed = service.start_training(self.subset, self.weights, TrainingConfig(1))
+        self.wait_for_completion(service)
+        self.assertEqual(service.load_run(failed.run_id)["status"], "failed")
+
+        service.process_factory = self.factory
+        retry = service.start_training(self.subset, self.weights, TrainingConfig(1))
+        self.wait_for_completion(service)
+        self.assertEqual(service.load_run(retry.run_id)["status"], "completed")
+        self.assertEqual(service.load_run(failed.run_id)["status"], "failed")
+
     def test_cancellation_retains_cancelled_record(self) -> None:
         def blocking_factory(**kwargs) -> FakeProcess:
             args = list(kwargs["args"])
