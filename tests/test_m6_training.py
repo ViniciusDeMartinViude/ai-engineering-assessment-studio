@@ -151,11 +151,15 @@ class M6TrainingTests(unittest.TestCase):
         self.assertEqual(record["base_weights"]["sha256"], sha256_file(self.weights))
         self.assertIn("--data", record["process_args"])
         self.assertNotIn("--split", record["process_args"])
+        self.assertFalse(record["config"]["amp"])
+        self.assertNotIn("--amp", record["process_args"])
         with self.assertRaises(TrainingError):
             service.start_training(self.subset, self.weights, TrainingConfig(1, epochs=2))
-        second = service.start_training(self.subset, self.weights, TrainingConfig(2, epochs=3, seed=5))
+        second = service.start_training(self.subset, self.weights, TrainingConfig(2, epochs=3, seed=5, amp=True))
         self.wait_for_completion(service)
         self.assertEqual(service.load_run(second.run_id)["status"], "completed")
+        self.assertTrue(service.load_run(second.run_id)["config"]["amp"])
+        self.assertIn("--amp", service.load_run(second.run_id)["process_args"])
 
     def test_failed_process_retains_failed_record(self) -> None:
         def failed_factory(**kwargs) -> FakeProcess:
