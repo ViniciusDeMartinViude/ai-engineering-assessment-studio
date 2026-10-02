@@ -1,13 +1,20 @@
 from __future__ import annotations
 
+import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
 
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
 import numpy as np
 
+from ai_assessment.core.workspace import CandidateWorkspace
 from ai_assessment.services.calibration import CalibrationGeometryMismatchError, CalibrationService
 from ai_assessment.services.camera import CameraOwnership
+from ai_assessment.services.results import ResultsService
+from ai_assessment.services.training import TrainingError, sha256_file
 from ai_assessment.services.vision import (
     Detection,
     LatestFrameBuffer,
@@ -15,6 +22,7 @@ from ai_assessment.services.vision import (
     RawDetection,
     VisionProfile,
     VisionWorker,
+    apply_camera_properties,
     apply_software_correction,
     map_bbox_to_full_frame,
     process_frame,
@@ -66,6 +74,29 @@ class FakeCapture:
 
     def release(self) -> None:
         self.released = True
+
+
+class RecordingCapture(FakeCapture):
+    def __init__(self, frames: list[np.ndarray], on_read: object = None) -> None:
+        super().__init__(True, frames)
+        self.on_read = on_read
+        self.read_count = 0
+        self.set_values: list[tuple[int, float]] = []
+        self.properties: dict[int, float] = {}
+
+    def read(self) -> tuple[bool, np.ndarray | None]:
+        self.read_count += 1
+        if self.read_count == 1 and callable(self.on_read):
+            self.on_read()
+        return super().read()
+
+    def get(self, prop: int) -> float:
+        return self.properties.get(prop, 0.0)
+
+    def set(self, prop: int, value: float) -> bool:
+        self.properties[prop] = float(value)
+        self.set_values.append((prop, float(value)))
+        return True
 
 
 class VisionServiceTests(unittest.TestCase):
@@ -160,6 +191,38 @@ class VisionServiceTests(unittest.TestCase):
         self.assertEqual(path.name, "vision_profile.json")
         self.assertEqual(loaded.to_dict(), profile.to_dict())
 
+    def test_camera_property_readback_is_json_serializable(self) -> None:
+        readback = apply_camera_properties(FakeCapture(True), {"exposure": -6.0})
+        json.dumps(readback)
+        self.assertIs(type(readback["exposure"]["supported"]), bool)
+
+    def test_camera_property_changes_apply_while_worker_is_running(self) -> None:
+        CameraOwnership.release("vision")
+        capture = RecordingCapture(
+            [
+                np.zeros((20, 20, 3), dtype=np.uint8),
+                np.zeros((20, 20, 3), dtype=np.uint8),
+            ]
+        )
+        worker = VisionWorker(
+            0,
+            {"requested_camera": {"exposure": -6.0}},
+            LatestFrameBuffer(),
+            capture_factory=lambda index: capture,
+        )
+
+        def update_exposure() -> None:
+            worker.update_settings({"requested_camera": {"exposure": -7.0}})
+            worker.stop()
+
+        capture.on_read = update_exposure
+        worker.run()
+
+        applied_values = [value for _prop, value in capture.set_values]
+        self.assertIn(-6.0, applied_values)
+        self.assertIn(-7.0, applied_values)
+        self.assertTrue(capture.released)
+
     def test_camera_and_model_failures_are_reported_and_camera_released(self) -> None:
         camera_errors: list[str] = []
         unopened = FakeCapture(False)
@@ -212,6 +275,147 @@ class VisionServiceTests(unittest.TestCase):
             bad.write_text("x", encoding="utf-8")
             with self.assertRaises(ModelLoadError):
                 validate_model_path(bad)
+
+    def _workspace_with_completed_run(self, root: Path, *, run_id: str = "run_01_done") -> tuple[CandidateWorkspace, Path]:
+        workspace = CandidateWorkspace.create(root / "C014", candidate_id="C014")
+        checkpoint = workspace.root / "models" / run_id / "weights" / "best.pt"
+        checkpoint.parent.mkdir(parents=True)
+        checkpoint.write_bytes(b"trained checkpoint")
+        result_dir = workspace.root / "results" / "training" / run_id
+        result_dir.mkdir(parents=True)
+        record = {
+            "run_id": run_id,
+            "status": "completed",
+            "started_at": "2026-10-02T10:00:00Z",
+            "paths": {
+                "model_dir": f"models/{run_id}",
+                "result_dir": f"results/training/{run_id}",
+            },
+            "checkpoints": [
+                {
+                    "path": f"models/{run_id}/weights/best.pt",
+                    "sha256": sha256_file(checkpoint),
+                    "bytes": checkpoint.stat().st_size,
+                }
+            ],
+        }
+        (result_dir / "run.json").write_text(json.dumps(record), encoding="utf-8")
+        return workspace, checkpoint
+
+    def test_completed_run_discovery_finds_verified_best_checkpoint(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace, checkpoint = self._workspace_with_completed_run(Path(directory))
+            references = ResultsService(workspace).completed_best_checkpoints()
+        self.assertEqual(len(references), 1)
+        self.assertEqual(references[0].run_id, "run_01_done")
+        self.assertEqual(references[0].path, checkpoint)
+        self.assertEqual(references[0].status, "available")
+
+    def test_selected_model_resolution_verifies_recorded_hash(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace, checkpoint = self._workspace_with_completed_run(Path(directory))
+            service = ResultsService(workspace)
+            service.select_model("run_01_done")
+            selected = service.selected_checkpoint()
+        self.assertIsNotNone(selected)
+        assert selected is not None
+        self.assertEqual(selected.path, checkpoint)
+        self.assertTrue(selected.is_available)
+
+    def test_recorded_checkpoint_missing_and_hash_mismatch_are_visible(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace, checkpoint = self._workspace_with_completed_run(Path(directory))
+            service = ResultsService(workspace)
+            checkpoint.unlink()
+            missing = service.completed_best_checkpoints()[0]
+            self.assertEqual(missing.status, "missing")
+            self.assertIn("moved or deleted", missing.message)
+            with self.assertRaises(TrainingError):
+                service.verify_checkpoint(missing)
+
+        with tempfile.TemporaryDirectory() as directory:
+            workspace, checkpoint = self._workspace_with_completed_run(Path(directory))
+            checkpoint.write_bytes(b"tampered checkpoint")
+            changed = ResultsService(workspace).completed_best_checkpoints()[0]
+            self.assertEqual(changed.status, "changed")
+            self.assertIn("SHA-256", changed.message)
+
+    def test_base_weights_are_not_discovered_as_trained_checkpoints(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = CandidateWorkspace.create(Path(directory) / "C014", candidate_id="C014")
+            base = workspace.root / "models" / "base_weights" / "yolo26n.pt"
+            base.parent.mkdir(parents=True)
+            base.write_bytes(b"base weights")
+            result_dir = workspace.root / "results" / "training" / "run_bad"
+            result_dir.mkdir(parents=True)
+            (result_dir / "run.json").write_text(
+                json.dumps(
+                    {
+                        "run_id": "run_bad",
+                        "status": "completed",
+                        "started_at": "2026-10-02T10:00:00Z",
+                        "checkpoints": [
+                            {
+                                "path": "models/base_weights/yolo26n.pt",
+                                "sha256": sha256_file(base),
+                                "bytes": base.stat().st_size,
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            self.assertEqual(ResultsService(workspace).completed_best_checkpoints(), [])
+
+    def test_vision_keeps_stale_profile_until_user_uses_results_model(self) -> None:
+        from PySide6.QtWidgets import QApplication
+
+        from ai_assessment.modules.vision import VisionPage
+
+        app = QApplication.instance() or QApplication([])
+        del app
+        with tempfile.TemporaryDirectory() as directory:
+            workspace, checkpoint = self._workspace_with_completed_run(Path(directory))
+            old = workspace.root / "models" / "old_manual.pt"
+            old.write_bytes(b"old manual model")
+            save_profile(
+                workspace.root,
+                VisionProfile(model_path=str(old), model_sha256=sha256_file(old)),
+            )
+            ResultsService(workspace).select_model("run_01_done")
+            page = VisionPage(workspace)
+            try:
+                self.assertEqual(Path(page.model_path.text()), old)
+                self.assertIn("run_01_done", page.selected_model_label.text())
+                page._use_selected_model()
+                self.assertEqual(Path(page.model_path.text()), checkpoint)
+                self.assertEqual(page._current_model_expected_sha, sha256_file(checkpoint))
+            finally:
+                page.shutdown()
+
+    def test_camera_controls_default_to_manual_and_focus_slider_disables_auto(self) -> None:
+        from PySide6.QtWidgets import QApplication
+
+        from ai_assessment.modules.vision import VisionPage
+
+        app = QApplication.instance() or QApplication([])
+        del app
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = CandidateWorkspace.create(Path(directory) / "C014", candidate_id="C014")
+            page = VisionPage(workspace)
+            try:
+                self.assertFalse(page.auto_exposure.isChecked())
+                self.assertFalse(page.auto_focus.isChecked())
+                self.assertFalse(page.auto_white_balance.isChecked())
+
+                page.auto_focus.setChecked(True)
+                page.focus.setValue(25)
+
+                self.assertFalse(page.auto_focus.isChecked())
+                self.assertEqual(page._settings()["requested_camera"]["autofocus"], 0.0)
+                self.assertEqual(page._settings()["requested_camera"]["focus"], 25.0)
+            finally:
+                page.shutdown()
 
 
 if __name__ == "__main__":

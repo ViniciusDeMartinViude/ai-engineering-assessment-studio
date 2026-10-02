@@ -25,6 +25,15 @@ WORKSPACE_DIRECTORIES = (
 )
 
 
+def _normalise_windows_extended_path(path: Path) -> Path:
+    text = str(path)
+    if text.startswith("\\\\?\\UNC\\"):
+        return Path("\\\\" + text[8:])
+    if text.startswith("\\\\?\\"):
+        return Path(text[4:])
+    return path
+
+
 @dataclass(frozen=True)
 class SessionMetadata:
     candidate_id: str
@@ -128,9 +137,11 @@ class CandidateWorkspace:
 
     def resolve_inside(self, *parts: str | Path) -> Path:
         candidate = self.root.joinpath(*parts).resolve()
-        if candidate != self.root and self.root not in candidate.parents:
+        root_for_check = _normalise_windows_extended_path(self.root)
+        candidate_for_check = _normalise_windows_extended_path(candidate)
+        if candidate_for_check != root_for_check and root_for_check not in candidate_for_check.parents:
             raise ValueError(f"Path escapes candidate workspace: {candidate}")
-        return candidate
+        return candidate_for_check
 
     def record_event(
         self,

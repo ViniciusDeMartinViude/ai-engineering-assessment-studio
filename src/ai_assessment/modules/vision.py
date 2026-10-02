@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 
@@ -10,22 +9,20 @@ import cv2
 from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal, Slot, QThread
 from PySide6.QtGui import QColor, QImage, QPainter, QPen
 from PySide6.QtWidgets import (
-    QAbstractItemView,
     QCheckBox,
-    QDoubleSpinBox,
+    QComboBox,
     QFileDialog,
     QFrame,
     QGridLayout,
     QGroupBox,
-    QHeaderView,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QPushButton,
+    QSizePolicy,
+    QSlider,
     QSpinBox,
     QSplitter,
-    QTableWidget,
-    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -33,6 +30,7 @@ from PySide6.QtWidgets import (
 from ..core.workspace import CandidateWorkspace
 from ..services.calibration import CalibrationError, CalibrationGeometryMismatchError, CalibrationRecord, CalibrationService
 from ..services.camera import CameraOwnership
+from ..services.results import CheckpointReference, ResultsService
 from ..services.vision import (
     Detection,
     FrameResult,
@@ -170,6 +168,51 @@ class VisionImageView(QWidget):
         self.update()
 
 
+class SliderControl(QWidget):
+    valueChanged = Signal(float)
+
+    def __init__(self, minimum: float, maximum: float, value: float, decimals: int) -> None:
+        super().__init__()
+        self._minimum = float(minimum)
+        self._maximum = float(maximum)
+        self._decimals = int(decimals)
+        self._scale = 10 ** self._decimals
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+        self.slider = QSlider(Qt.Orientation.Horizontal)
+        self.slider.setRange(self._to_raw(self._minimum), self._to_raw(self._maximum))
+        self.slider.valueChanged.connect(self._slider_changed)
+        self.value_label = QLabel()
+        self.value_label.setObjectName("visionSliderValue")
+        self.value_label.setMinimumWidth(48 if self._decimals else 42)
+        self.value_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        layout.addWidget(self.slider, 1)
+        layout.addWidget(self.value_label)
+        self.setValue(value)
+
+    def value(self) -> float:
+        return self.slider.value() / self._scale
+
+    def setValue(self, value: float) -> None:
+        raw = self._to_raw(max(self._minimum, min(self._maximum, float(value))))
+        self.slider.setValue(raw)
+        self._update_label()
+
+    def _to_raw(self, value: float) -> int:
+        return int(round(value * self._scale))
+
+    def _slider_changed(self, _value: int) -> None:
+        self._update_label()
+        self.valueChanged.emit(self.value())
+
+    def _update_label(self) -> None:
+        if self._decimals:
+            self.value_label.setText(f"{self.value():.{self._decimals}f}")
+        else:
+            self.value_label.setText(str(int(round(self.value()))))
+
+
 class VisionPage(QWidget):
     """Embedded raw/processed camera and local-model vision workspace."""
 
@@ -178,10 +221,16 @@ class VisionPage(QWidget):
         self.workspace = workspace
         self.setObjectName("visionPage")
         self.buffer = LatestFrameBuffer()
+        self.results_service = ResultsService(workspace)
         self._thread: QThread | None = None
         self._worker: VisionWorker | None = None
         self._last_result: FrameResult | None = None
         self._camera_metadata: dict[str, Any] = {}
+        self._available_checkpoints: list[CheckpointReference] = []
+        self._selected_checkpoint: CheckpointReference | None = None
+        self._current_model_expected_sha: str | None = None
+        self._current_model_label = "manual model"
+        self._applying_profile = False
         try:
             self._profile = load_profile(workspace.root)
             self._profile_error: str | None = None
@@ -191,6 +240,7 @@ class VisionPage(QWidget):
         self._calibration: CalibrationRecord | None = None
         self._build_ui()
         self._apply_profile()
+        self._refresh_model_choices()
         self._load_calibration()
         if self._profile_error:
             self.status.setText(f"Camera profile unavailable: {self._profile_error}")
@@ -201,8 +251,8 @@ class VisionPage(QWidget):
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
-        root.setContentsMargins(22, 18, 22, 18)
-        root.setSpacing(9)
+        root.setContentsMargins(18, 14, 18, 14)
+        root.setSpacing(7)
         eyebrow = QLabel("VISION")
         eyebrow.setObjectName("visionEyebrow")
         title = QLabel("Vision Studio")
@@ -218,145 +268,174 @@ class VisionPage(QWidget):
 
         controls = QFrame()
         controls.setObjectName("visionCard")
+        controls.setMinimumWidth(0)
+        controls.setMaximumWidth(430)
         controls_layout = QVBoxLayout(controls)
-        controls_layout.setContentsMargins(14, 12, 14, 12)
-        controls_layout.setSpacing(10)
-
-        source_row = QHBoxLayout()
-        source_row.setSpacing(10)
-
-        source_group = QGroupBox("Input source")
-        source_group.setObjectName("visionControlGroup")
-        source_layout = QGridLayout(source_group)
-        source_layout.setContentsMargins(11, 12, 11, 10)
-        source_layout.setHorizontalSpacing(9)
-        source_layout.setVerticalSpacing(7)
-        source_layout.addWidget(QLabel("Camera index"), 0, 0)
-        self.camera_index = QSpinBox()
-        self.camera_index.setRange(0, 20)
-        source_layout.addWidget(self.camera_index, 0, 1)
-        source_layout.setColumnStretch(1, 1)
-        source_row.addWidget(source_group)
-
-        model_group = QGroupBox("Local model")
-        model_group.setObjectName("visionControlGroup")
-        model_layout = QGridLayout(model_group)
-        model_layout.setContentsMargins(11, 12, 11, 10)
-        model_layout.setHorizontalSpacing(8)
-        model_layout.setVerticalSpacing(7)
-        model_layout.addWidget(QLabel("Weights file"), 0, 0)
-        self.model_path = QLineEdit()
-        self.model_path.setPlaceholderText("Optional .pt or .onnx file; preview works without a model")
-        self.model_path.editingFinished.connect(self._model_path_changed)
-        model_layout.addWidget(self.model_path, 0, 1, 1, 2)
-        choose_model = QPushButton("Browse model...")
-        choose_model.setObjectName("visionSecondary")
-        choose_model.clicked.connect(self._browse_model)
-        model_layout.addWidget(choose_model, 1, 1)
-        self.load_model_button = QPushButton("Load model")
-        self.load_model_button.setObjectName("visionAction")
-        self.load_model_button.clicked.connect(self._load_model)
-        model_layout.addWidget(self.load_model_button, 1, 2)
-        model_layout.setColumnStretch(1, 1)
-        source_row.addWidget(model_group, 1)
+        controls_layout.setContentsMargins(12, 10, 12, 10)
+        controls_layout.setSpacing(7)
 
         capture_group = QGroupBox("Capture")
         capture_group.setObjectName("visionControlGroup")
-        capture_layout = QHBoxLayout(capture_group)
-        capture_layout.setContentsMargins(11, 12, 11, 10)
-        capture_layout.setSpacing(8)
+        capture_layout = QGridLayout(capture_group)
+        capture_layout.setContentsMargins(9, 10, 9, 9)
+        capture_layout.setHorizontalSpacing(7)
+        capture_layout.setVerticalSpacing(7)
         self.start_button = QPushButton("Start camera")
         self.start_button.setObjectName("visionPrimary")
         self.start_button.clicked.connect(self._start_camera)
-        capture_layout.addWidget(self.start_button)
+        capture_layout.addWidget(self.start_button, 0, 0)
         self.stop_button = QPushButton("Stop")
         self.stop_button.setObjectName("visionStop")
         self.stop_button.clicked.connect(self._stop_camera)
         self.stop_button.setEnabled(False)
-        capture_layout.addWidget(self.stop_button)
-        source_row.addWidget(capture_group)
-        controls_layout.addLayout(source_row)
+        capture_layout.addWidget(self.stop_button, 0, 1)
+        capture_layout.addWidget(QLabel("Camera"), 1, 0)
+        self.camera_index = QSpinBox()
+        self.camera_index.setRange(0, 20)
+        self.camera_index.setMaximumWidth(78)
+        capture_layout.addWidget(self.camera_index, 1, 1)
+        self.device_label = QLabel("Device: preview only")
+        self.device_label.setObjectName("visionDevice")
+        capture_layout.addWidget(self.device_label, 2, 0, 1, 2)
+        controls_layout.addWidget(capture_group)
 
-        tuning_row = QHBoxLayout()
-        tuning_row.setSpacing(10)
+        model_group = QGroupBox("Local model")
+        model_group.setObjectName("visionControlGroup")
+        model_group.setMinimumWidth(0)
+        model_group.setMaximumHeight(220)
+        model_layout = QGridLayout(model_group)
+        model_layout.setContentsMargins(9, 10, 9, 9)
+        model_layout.setHorizontalSpacing(7)
+        model_layout.setVerticalSpacing(6)
+        model_layout.addWidget(QLabel("Weights file"), 0, 0)
+        self.model_path = QLineEdit()
+        self.model_path.setMinimumWidth(160)
+        self.model_path.setPlaceholderText("Optional .pt or .onnx file; preview works without a model")
+        self.model_path.editingFinished.connect(self._model_path_changed)
+        model_layout.addWidget(self.model_path, 0, 1, 1, 3)
+        choose_model = QPushButton("Browse model...")
+        choose_model.setObjectName("visionSecondary")
+        choose_model.clicked.connect(self._browse_model)
+        model_layout.addWidget(choose_model, 0, 4)
+        self.load_model_button = QPushButton("Load model")
+        self.load_model_button.setObjectName("visionAction")
+        self.load_model_button.clicked.connect(self._load_model)
+        model_layout.addWidget(self.load_model_button, 0, 5)
+        model_layout.addWidget(QLabel("Results selection"), 1, 0)
+        self.selected_model_label = QLabel("No production model selected in Results.")
+        self.selected_model_label.setObjectName("visionModelPath")
+        self.selected_model_label.setMinimumWidth(0)
+        self.selected_model_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.selected_model_label.setWordWrap(True)
+        self.selected_model_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        model_layout.addWidget(self.selected_model_label, 1, 1, 1, 3)
+        self.use_selected_model_button = QPushButton("Use selected Results model")
+        self.use_selected_model_button.setObjectName("visionAction")
+        self.use_selected_model_button.clicked.connect(self._use_selected_model)
+        model_layout.addWidget(self.use_selected_model_button, 1, 4, 1, 2)
+        model_layout.addWidget(QLabel("Completed run"), 2, 0)
+        self.run_model_combo = QComboBox()
+        self.run_model_combo.currentIndexChanged.connect(self._run_model_changed)
+        model_layout.addWidget(self.run_model_combo, 2, 1, 1, 2)
+        self.run_checkpoint_label = QLabel("No completed run checkpoint found.")
+        self.run_checkpoint_label.setObjectName("visionModelPath")
+        self.run_checkpoint_label.setMinimumWidth(0)
+        self.run_checkpoint_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.run_checkpoint_label.setWordWrap(True)
+        self.run_checkpoint_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        model_layout.addWidget(self.run_checkpoint_label, 3, 1, 1, 5)
+        refresh_runs = QPushButton("Refresh runs")
+        refresh_runs.setObjectName("visionSecondary")
+        refresh_runs.clicked.connect(self._refresh_model_choices)
+        model_layout.addWidget(refresh_runs, 2, 3)
+        self.use_run_model_button = QPushButton("Use run best.pt")
+        self.use_run_model_button.setObjectName("visionAction")
+        self.use_run_model_button.clicked.connect(self._use_run_model)
+        model_layout.addWidget(self.use_run_model_button, 2, 4, 1, 2)
+        model_layout.setColumnStretch(1, 1)
+        model_layout.setColumnStretch(2, 1)
+        model_layout.setColumnStretch(3, 1)
 
         inference_group = QGroupBox("Inference adjustments")
         inference_group.setObjectName("visionControlGroup")
         inference_layout = QGridLayout(inference_group)
-        inference_layout.setContentsMargins(11, 12, 11, 10)
-        inference_layout.setHorizontalSpacing(8)
-        inference_layout.setVerticalSpacing(7)
-        self.confidence = self._double_control(0.05, 0.99, 0.5, 2)
-        self.brightness = QSpinBox()
-        self.brightness.setRange(-100, 100)
-        self.contrast = self._double_control(0.2, 3.0, 1.0, 2)
-        for column, (label, widget) in enumerate(
+        inference_layout.setContentsMargins(9, 10, 9, 9)
+        inference_layout.setHorizontalSpacing(7)
+        inference_layout.setVerticalSpacing(6)
+        self.confidence = self._slider_control(0.05, 0.99, 0.5, 2)
+        self.brightness = self._slider_control(-100, 100, 0, 0)
+        self.contrast = self._slider_control(0.2, 3.0, 1.0, 2)
+        for index, (label, widget) in enumerate(
             (("Confidence", self.confidence), ("Brightness", self.brightness), ("Contrast", self.contrast))
         ):
-            inference_layout.addWidget(QLabel(label), 0, column * 2)
-            inference_layout.addWidget(widget, 0, column * 2 + 1)
-        for column in range(3):
-            inference_layout.setColumnStretch(column * 2 + 1, 1)
-        tuning_row.addWidget(inference_group, 1)
+            row = index * 2
+            inference_layout.addWidget(QLabel(label), row, 0)
+            inference_layout.addWidget(widget, row + 1, 0, 1, 2)
+        inference_layout.setColumnStretch(0, 1)
+        controls_layout.addWidget(inference_group)
 
         camera_group = QGroupBox("Camera properties")
         camera_group.setObjectName("visionControlGroup")
         camera_layout = QGridLayout(camera_group)
-        camera_layout.setContentsMargins(11, 12, 11, 10)
-        camera_layout.setHorizontalSpacing(8)
-        camera_layout.setVerticalSpacing(7)
+        camera_layout.setContentsMargins(9, 10, 9, 9)
+        camera_layout.setHorizontalSpacing(7)
+        camera_layout.setVerticalSpacing(6)
         self.auto_exposure = QCheckBox("Auto exposure")
-        self.auto_exposure.setChecked(True)
-        self.exposure = self._double_control(-20, 20, -6, 2)
+        self.auto_exposure.setChecked(False)
+        self.exposure = self._slider_control(-20, 20, -6, 0)
         self.auto_focus = QCheckBox("Auto focus")
-        self.auto_focus.setChecked(True)
-        self.focus = self._double_control(0, 1000, 0, 1)
+        self.auto_focus.setChecked(False)
+        self.focus = self._slider_control(0, 1000, 0, 0)
         self.auto_white_balance = QCheckBox("Auto white balance")
-        self.auto_white_balance.setChecked(True)
-        self.white_balance = self._double_control(2000, 10000, 4500, 0)
-        for row, (auto_control, label, value_control) in enumerate(
+        self.auto_white_balance.setChecked(False)
+        self.white_balance = self._slider_control(2000, 10000, 4500, 0)
+        for index, (auto_control, value_control) in enumerate(
             (
-                (self.auto_exposure, "Exposure", self.exposure),
-                (self.auto_focus, "Focus", self.focus),
-                (self.auto_white_balance, "White balance", self.white_balance),
+                (self.auto_exposure, self.exposure),
+                (self.auto_focus, self.focus),
+                (self.auto_white_balance, self.white_balance),
             )
         ):
+            row = index * 2
             camera_layout.addWidget(auto_control, row, 0)
-            camera_layout.addWidget(QLabel(label), row, 1)
-            camera_layout.addWidget(value_control, row, 2)
-        camera_layout.setColumnStretch(2, 1)
-        tuning_row.addWidget(camera_group, 1)
-        controls_layout.addLayout(tuning_row)
+            camera_layout.addWidget(value_control, row + 1, 0, 1, 2)
+        camera_layout.setColumnStretch(0, 1)
+        controls_layout.addWidget(camera_group)
 
-        action_row = QHBoxLayout()
-        action_row.setSpacing(8)
+        action_row = QGridLayout()
+        action_row.setHorizontalSpacing(7)
+        action_row.setVerticalSpacing(7)
         self.save_profile_button = QPushButton("Save camera profile")
         self.save_profile_button.setObjectName("visionSecondary")
         self.save_profile_button.clicked.connect(self._save_profile)
-        action_row.addWidget(self.save_profile_button)
+        action_row.addWidget(self.save_profile_button, 0, 0)
         self.snapshot_button = QPushButton("Save snapshot")
         self.snapshot_button.setObjectName("visionAction")
         self.snapshot_button.clicked.connect(self._save_snapshot)
         self.snapshot_button.setEnabled(False)
-        action_row.addWidget(self.snapshot_button)
+        action_row.addWidget(self.snapshot_button, 0, 1)
         clear_roi = QPushButton("Clear ROI")
         clear_roi.setObjectName("visionSecondary")
         clear_roi.clicked.connect(self._clear_roi)
-        action_row.addWidget(clear_roi)
+        action_row.addWidget(clear_roi, 1, 0)
         self.reload_calibration_button = QPushButton("Reload calibration")
         self.reload_calibration_button.setObjectName("visionSecondary")
         self.reload_calibration_button.clicked.connect(self._load_calibration)
-        action_row.addWidget(self.reload_calibration_button)
-        action_row.addStretch(1)
-        self.device_label = QLabel("Device: preview only")
-        self.device_label.setObjectName("visionDevice")
-        action_row.addWidget(self.device_label)
+        action_row.addWidget(self.reload_calibration_button, 1, 1)
+        controls_layout.addLayout(action_row)
+        self.calibration_warning = QLabel("No matching saved calibration loaded.")
+        self.calibration_warning.setObjectName("visionWarning")
+        self.calibration_warning.setWordWrap(True)
+        controls_layout.addWidget(self.calibration_warning)
+        self.status = QLabel("Start the camera for a live preview. A model is optional.")
+        self.status.setObjectName("visionStatus")
+        self.status.setWordWrap(True)
+        controls_layout.addWidget(self.status)
         self.camera_readback = QLabel("Camera requested/read-back values appear after start.")
         self.camera_readback.setWordWrap(True)
         self.camera_readback.setObjectName("visionReadback")
-        action_row.addWidget(self.camera_readback, 1)
-        controls_layout.addLayout(action_row)
-        root.addWidget(controls)
+        controls_layout.addWidget(self.camera_readback)
+        controls_layout.addStretch(1)
 
         center = QSplitter(Qt.Orientation.Horizontal)
         center.setChildrenCollapsible(False)
@@ -388,32 +467,11 @@ class VisionPage(QWidget):
         image_layout.addWidget(self.roi_label)
         center.addWidget(image_card)
 
-        detection_card = QFrame()
-        detection_card.setObjectName("visionCard")
-        detection_layout = QVBoxLayout(detection_card)
-        detection_layout.setContentsMargins(12, 10, 12, 10)
-        detection_layout.addWidget(QLabel("Detections and centers"))
-        self.detection_table = QTableWidget(0, 7)
-        self.detection_table.setHorizontalHeaderLabels(
-            ("ID", "Class", "Confidence", "BBox full px", "Center full px", "Frame", "Robot X/Y")
-        )
-        self.detection_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        header = self.detection_table.horizontalHeader()
-        header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
-        header.setStretchLastSection(True)
-        detection_layout.addWidget(self.detection_table, 1)
-        self.calibration_warning = QLabel("No matching saved calibration loaded.")
-        self.calibration_warning.setObjectName("visionWarning")
-        self.calibration_warning.setWordWrap(True)
-        detection_layout.addWidget(self.calibration_warning)
-        self.status = QLabel("Start the camera for a live preview. A model is optional.")
-        self.status.setObjectName("visionStatus")
-        self.status.setWordWrap(True)
-        detection_layout.addWidget(self.status)
-        center.addWidget(detection_card)
-        center.setStretchFactor(0, 3)
+        center.addWidget(controls)
+        center.setStretchFactor(0, 5)
         center.setStretchFactor(1, 2)
         root.addWidget(center, 1)
+        root.addWidget(model_group)
 
         self.setStyleSheet(
             """
@@ -426,6 +484,7 @@ class VisionPage(QWidget):
             QLabel#visionWarning { background: #fff0ed; color: #9f2d20; border-radius: 8px; padding: 9px; }
             QLabel#visionHint { background: #fff6e5; color: #795214; border-radius: 8px; padding: 7px; }
             QLabel#visionDevice { color: #14675f; font-weight: 800; }
+            QLabel#visionModelPath { color: #43576a; background: #f2f7f8; border: 1px solid #d8e5e9; border-radius: 6px; padding: 6px; }
              QLabel#visionReadback { color: #61748c; }
              QGroupBox#visionControlGroup { background: #f8fbfc; border: 1px solid #c7d8df; border-radius: 7px; margin-top: 8px; padding: 9px; }
              QGroupBox#visionControlGroup::title { color: #2a4c63; font-size: 12px; font-weight: 800; padding: 0 4px; }
@@ -437,8 +496,12 @@ class VisionPage(QWidget):
              QPushButton#visionStop:hover { background: #ffe9e5; border-color: #b74b3e; }
              QPushButton#visionAction { background: #e8f3f2; color: #075f59; border-color: #76bdb7; font-weight: 700; }
              QPushButton#visionAction:hover { background: #d3e9e6; border-color: #087f75; }
-            QLineEdit, QSpinBox, QDoubleSpinBox { background: white; color: #17304d; border: 1px solid #cbd9e6; border-radius: 7px; padding: 5px 8px; }
-            QTableWidget { background: white; color: #17304d; border: 1px solid #d4e2ed; border-radius: 7px; }
+            QLineEdit, QSpinBox { background: white; color: #17304d; border: 1px solid #cbd9e6; border-radius: 7px; padding: 5px 8px; }
+            QLabel#visionSliderValue { color: #43576a; font-weight: 700; }
+            QSlider::groove:horizontal { height: 8px; background: #c9dce5; border-radius: 4px; }
+            QSlider::sub-page:horizontal { background: #087f75; border-radius: 4px; }
+            QSlider::handle:horizontal { background: #ffffff; border: 2px solid #087f75; width: 18px; margin: -7px 0; border-radius: 10px; }
+            QSlider::handle:horizontal:hover { border-color: #087f75; }
             """
         )
         for widget in (self.confidence, self.brightness, self.contrast, self.exposure, self.focus, self.white_balance,
@@ -447,54 +510,41 @@ class VisionPage(QWidget):
                 widget.valueChanged.connect(self._settings_changed)
             else:
                 widget.stateChanged.connect(self._settings_changed)
+        self.exposure.valueChanged.connect(lambda *_args: self._manual_camera_adjustment(self.auto_exposure))
+        self.focus.valueChanged.connect(lambda *_args: self._manual_camera_adjustment(self.auto_focus))
+        self.white_balance.valueChanged.connect(lambda *_args: self._manual_camera_adjustment(self.auto_white_balance))
 
     @staticmethod
-    def _double_control(minimum: float, maximum: float, value: float, decimals: int) -> QDoubleSpinBox:
-        control = QDoubleSpinBox()
-        control.setRange(minimum, maximum)
-        control.setValue(value)
-        control.setDecimals(decimals)
-        control.setSingleStep(0.1 if decimals else 1.0)
-        return control
+    def _slider_control(minimum: float, maximum: float, value: float, decimals: int) -> SliderControl:
+        return SliderControl(minimum, maximum, value, decimals)
 
     def _apply_profile(self) -> None:
-        profile = self._profile
-        self.camera_index.setValue(profile.camera_index)
-        self.confidence.setValue(profile.confidence)
-        self.brightness.setValue(int(profile.brightness))
-        self.contrast.setValue(profile.contrast)
-        requested = profile.requested_camera
-        self.auto_exposure.setChecked(float(requested.get("auto_exposure", 1.0)) != 0.0)
-        self.exposure.setValue(float(requested.get("exposure", self.exposure.value())))
-        self.auto_focus.setChecked(float(requested.get("autofocus", 1.0)) != 0.0)
-        self.focus.setValue(float(requested.get("focus", self.focus.value())))
-        self.auto_white_balance.setChecked(
-            float(requested.get("auto_white_balance", 1.0)) != 0.0
-        )
-        self.white_balance.setValue(
-            float(requested.get("white_balance", self.white_balance.value()))
-        )
-        if profile.model_path and Path(profile.model_path).is_file():
-            self.model_path.setText(profile.model_path)
-        else:
-            selected_candidate: Path | None = None
-            selection_path = self.workspace.resolve_inside("results", "selected_model.json")
-            if selection_path.is_file():
-                try:
-                    selection = json.loads(selection_path.read_text(encoding="utf-8"))
-                    if isinstance(selection, dict):
-                        selected_candidate = self.workspace.resolve_inside(selection.get("path", ""))
-                except (OSError, TypeError, ValueError):
-                    selected_candidate = None
-            candidates = ([selected_candidate] if selected_candidate else []) + [Path.cwd() / "yolo26n.pt", self.workspace.root / "models" / "yolo26n.pt"]
-            for candidate in candidates:
-                if candidate is None:
-                    continue
-                if candidate.is_file():
-                    self.model_path.setText(str(candidate.resolve()))
-                    break
-        if profile.roi:
-            self._set_roi_from_mapping(profile.roi, log_event=False)
+        self._applying_profile = True
+        try:
+            profile = self._profile
+            self.camera_index.setValue(profile.camera_index)
+            self.confidence.setValue(profile.confidence)
+            self.brightness.setValue(int(profile.brightness))
+            self.contrast.setValue(profile.contrast)
+            requested = profile.requested_camera
+            self.auto_exposure.setChecked(float(requested.get("auto_exposure", 0.0)) != 0.0)
+            self.exposure.setValue(float(requested.get("exposure", self.exposure.value())))
+            self.auto_focus.setChecked(float(requested.get("autofocus", 0.0)) != 0.0)
+            self.focus.setValue(float(requested.get("focus", self.focus.value())))
+            self.auto_white_balance.setChecked(
+                float(requested.get("auto_white_balance", 0.0)) != 0.0
+            )
+            self.white_balance.setValue(
+                float(requested.get("white_balance", self.white_balance.value()))
+            )
+            if profile.model_path:
+                self.model_path.setText(profile.model_path)
+                self._current_model_expected_sha = profile.model_sha256
+                self._current_model_label = "saved camera profile model"
+            if profile.roi:
+                self._set_roi_from_mapping(profile.roi, log_event=False)
+        finally:
+            self._applying_profile = False
 
     def _settings(self) -> dict[str, Any]:
         return {
@@ -511,6 +561,7 @@ class VisionPage(QWidget):
                 "white_balance": float(self.white_balance.value()),
             },
             "model_path": self.model_path.text().strip() or None,
+            "model_sha256": self._current_model_expected_sha,
         }
 
     def _browse_model(self) -> None:
@@ -520,6 +571,8 @@ class VisionPage(QWidget):
             self._model_path_changed()
 
     def _model_path_changed(self) -> None:
+        self._current_model_expected_sha = None
+        self._current_model_label = "manual model"
         if self._worker is not None:
             raw_path = self.model_path.text().strip()
             self._worker.request_model_load(Path(raw_path) if raw_path else None)
@@ -533,10 +586,90 @@ class VisionPage(QWidget):
             self.status.setText(str(error))
             return
         if self._worker is None:
+            self._save_profile()
             self.status.setText("Model selected. Start the camera to load it off the UI thread; preview does not require a model.")
             return
-        self._worker.request_model_load(path)
+        self._worker.request_model_load(
+            path,
+            expected_sha256=self._current_model_expected_sha,
+            label=self._current_model_label,
+        )
         self._save_profile()
+
+    def _refresh_model_choices(self) -> None:
+        current_run = self.run_model_combo.currentData() if hasattr(self, "run_model_combo") else None
+        try:
+            self._selected_checkpoint = self.results_service.selected_checkpoint()
+            self._available_checkpoints = self.results_service.completed_best_checkpoints()
+        except Exception as error:
+            self._selected_checkpoint = None
+            self._available_checkpoints = []
+            self.selected_model_label.setText(f"Results model unavailable: {error}")
+            self.use_selected_model_button.setEnabled(False)
+            self.run_model_combo.clear()
+            self.run_checkpoint_label.setText("Completed run checkpoints unavailable.")
+            self.use_run_model_button.setEnabled(False)
+            return
+
+        if self._selected_checkpoint is None:
+            self.selected_model_label.setText("No production model selected in Results.")
+            self.use_selected_model_button.setEnabled(False)
+        else:
+            selected = self._selected_checkpoint
+            self.selected_model_label.setText(
+                f"Run {selected.run_id}\n{selected.path}\n{selected.message}"
+            )
+            self.use_selected_model_button.setEnabled(selected.is_available)
+
+        self.run_model_combo.blockSignals(True)
+        self.run_model_combo.clear()
+        for reference in self._available_checkpoints:
+            marker = "selected" if reference.selected else reference.status
+            self.run_model_combo.addItem(f"{reference.run_id} | {marker}", reference.run_id)
+        if current_run:
+            index = self.run_model_combo.findData(current_run)
+            if index >= 0:
+                self.run_model_combo.setCurrentIndex(index)
+        self.run_model_combo.blockSignals(False)
+        self._run_model_changed()
+
+    def _run_model_changed(self, *_args: Any) -> None:
+        reference = self._selected_run_checkpoint()
+        if reference is None:
+            self.run_checkpoint_label.setText("No completed run checkpoint found.")
+            self.use_run_model_button.setEnabled(False)
+            return
+        self.run_checkpoint_label.setText(f"{reference.path}\n{reference.message}")
+        self.use_run_model_button.setEnabled(reference.is_available)
+
+    def _selected_run_checkpoint(self) -> CheckpointReference | None:
+        run_id = self.run_model_combo.currentData()
+        if not run_id:
+            return None
+        return next((reference for reference in self._available_checkpoints if reference.run_id == run_id), None)
+
+    def _use_selected_model(self) -> None:
+        if self._selected_checkpoint is None:
+            self.status.setText("Select a completed production model in Results first.")
+            return
+        self._use_checkpoint(self._selected_checkpoint, "selected Results model")
+
+    def _use_run_model(self) -> None:
+        reference = self._selected_run_checkpoint()
+        if reference is None:
+            self.status.setText("Choose a completed training run first.")
+            return
+        self._use_checkpoint(reference, "completed run best.pt")
+
+    def _use_checkpoint(self, reference: CheckpointReference, label: str) -> None:
+        if not reference.is_available:
+            self.status.setText(reference.message)
+            return
+        self.model_path.setText(str(reference.path))
+        self._current_model_expected_sha = reference.sha256
+        self._current_model_label = label
+        self._save_profile()
+        self._load_model()
 
     def _start_camera(self) -> None:
         if self._thread is not None:
@@ -586,7 +719,10 @@ class VisionPage(QWidget):
         values = []
         for name in ("exposure", "focus", "white_balance"):
             entry = readback.get(name, {})
-            values.append(f"{name}: {requested.get(name, '--')} -> {entry.get('actual', '--')}")
+            values.append(
+                f"{name}: {self._format_camera_value(requested.get(name))} -> "
+                f"{self._format_camera_value(entry.get('actual'))}"
+            )
         self.camera_readback.setText(" | ".join(values))
         self.status.setText("Camera live. Preview is active; draw an ROI or load a local model.")
         self._profile.backend = metadata.get("backend")
@@ -597,12 +733,18 @@ class VisionPage(QWidget):
         ) if metadata.get("readback_width") and metadata.get("readback_height") else None
         self._save_profile()
 
-    @Slot(str, str)
-    def _model_status(self, state: str, value: str) -> None:
+    @Slot(str, object)
+    def _model_status(self, state: str, value: object) -> None:
         if state == "loaded":
-            self.device_label.setText(f"Device: {value}")
-            self._profile.model_device = value
-            self.workspace.record_event("vision.model.loaded", {"model": self.model_path.text(), "device": value})
+            payload = value if isinstance(value, dict) else {"device": str(value)}
+            device = str(payload.get("device", "unknown"))
+            self.device_label.setText(f"Device: {device}")
+            self._profile.model_device = device
+            if payload.get("sha256"):
+                self._current_model_expected_sha = str(payload["sha256"])
+                self._profile.model_sha256 = self._current_model_expected_sha
+                self._save_profile()
+            self.workspace.record_event("vision.model.loaded", {"model": self.model_path.text(), "device": device, "sha256": payload.get("sha256")})
         else:
             self.device_label.setText("Device: model unavailable")
             self.workspace.record_event("vision.model.load_failed", {"model": self.model_path.text(), "error": value}, outcome="failed")
@@ -610,6 +752,22 @@ class VisionPage(QWidget):
     @Slot(str)
     def _worker_error(self, message: str) -> None:
         self.status.setText(message)
+
+    @staticmethod
+    def _format_camera_value(value: Any) -> str:
+        if value is None:
+            return "--"
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return str(value)
+        if number.is_integer():
+            return str(int(number))
+        return f"{number:.2f}"
+
+    def _manual_camera_adjustment(self, auto_control: QCheckBox) -> None:
+        if not self._applying_profile and auto_control.isChecked():
+            auto_control.setChecked(False)
 
     def _settings_changed(self, *_args: Any) -> None:
         settings = self._settings()
@@ -656,36 +814,26 @@ class VisionPage(QWidget):
         self._populate_detections(result)
 
     def _populate_detections(self, result: FrameResult) -> None:
-        self.detection_table.setRowCount(0)
         geometry_warning = ""
-        for row, detection in enumerate(result.detections):
-            self.detection_table.insertRow(row)
-            robot_text = "--"
+        for detection in result.detections:
             if self._calibration is not None:
                 try:
-                    robot = robot_coordinates_for_detection(self._calibration, detection, result.full_frame_size)
-                    robot_text = f"{robot[0]:.1f}, {robot[1]:.1f}"
+                    robot_coordinates_for_detection(self._calibration, detection, result.full_frame_size)
                 except CalibrationGeometryMismatchError as error:
                     geometry_warning = str(error)
                 except CalibrationError as error:
                     geometry_warning = str(error)
-            values = (
-                str(detection.class_id),
-                detection.class_name,
-                f"{detection.confidence:.1%}",
-                ", ".join(str(int(round(value))) for value in detection.bbox_xyxy),
-                ", ".join(str(int(round(value))) for value in detection.center_px),
-                str(detection.frame_id),
-                robot_text,
-            )
-            for column, value in enumerate(values):
-                self.detection_table.setItem(row, column, QTableWidgetItem(value))
+                if geometry_warning:
+                    break
         if self._calibration is None:
             self.calibration_warning.setText("No matching saved calibration loaded. Robot coordinates are not shown.")
         elif geometry_warning:
             self.calibration_warning.setText(geometry_warning)
         else:
             self.calibration_warning.setText("Saved calibration matches the current full-frame geometry.")
+        count = len(result.detections)
+        if count:
+            self.status.setText(f"Camera live. {count} detection{'s' if count != 1 else ''} in the current frame.")
 
     def _load_calibration(self) -> None:
         path = self.workspace.resolve_inside("calibration", "calibration.json")
@@ -715,11 +863,17 @@ class VisionPage(QWidget):
             self._profile.requested_camera = self._settings()["requested_camera"]
             resolved_model = str(model_path.resolve()) if model_path else None
             if resolved_model != self._profile.model_path:
-                self._profile.model_sha256 = None
+                self._profile.model_sha256 = self._current_model_expected_sha if resolved_model else None
+            elif self._current_model_expected_sha:
+                self._profile.model_sha256 = self._current_model_expected_sha
             self._profile.model_path = resolved_model
             save_profile(self.workspace.root, self._profile)
         except (OSError, VisionError):
             pass
+
+    def showEvent(self, event: Any) -> None:
+        super().showEvent(event)
+        self._refresh_model_choices()
 
     def _save_snapshot(self) -> None:
         if self._last_result is None:
