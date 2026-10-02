@@ -136,6 +136,13 @@ class VisionProfile:
         )
 
 
+@dataclass(frozen=True)
+class ModelLoadRequest:
+    path: Path
+    expected_sha256: str | None = None
+    label: str = "model"
+
+
 class InferenceAdapter(Protocol):
     device: str
     class_names: Mapping[int, str]
@@ -452,19 +459,20 @@ def apply_camera_properties(capture: Any, requested: Mapping[str, Any]) -> dict[
         if prop is None:
             readback[name] = {"requested": requested[name], "actual": None, "supported": False}
             continue
-        requested_value = requested[name]
+        raw_requested_value = requested[name]
         try:
-            accepted = bool(capture.set(prop, float(requested_value)))
+            requested_value = float(raw_requested_value)
+            accepted = bool(capture.set(prop, requested_value))
             actual = float(capture.get(prop))
             readback[name] = {
                 "requested": requested_value,
                 "actual": actual,
                 "accepted": accepted,
-                "supported": accepted or np.isfinite(actual),
+                "supported": bool(accepted or np.isfinite(actual)),
             }
         except Exception as error:
             readback[name] = {
-                "requested": requested_value,
+                "requested": raw_requested_value,
                 "actual": None,
                 "accepted": False,
                 "supported": False,
@@ -481,12 +489,32 @@ def _open_capture(camera_index: int) -> Any:
     return capture
 
 
+def _capture_metadata(
+    capture: Any,
+    *,
+    camera_index: int,
+    backend: str | None,
+    requested_camera: Mapping[str, Any],
+    readback_camera: Mapping[str, Any],
+) -> dict[str, Any]:
+    return {
+        "source_type": "camera",
+        "camera_index": camera_index,
+        "backend": backend,
+        "requested_camera": dict(requested_camera),
+        "readback_camera": dict(readback_camera),
+        "readback_width": float(capture.get(cv2.CAP_PROP_FRAME_WIDTH)),
+        "readback_height": float(capture.get(cv2.CAP_PROP_FRAME_HEIGHT)),
+        "readback_fps": float(capture.get(cv2.CAP_PROP_FPS)),
+    }
+
+
 class VisionWorker(QObject):
     """Capture and inference worker. UI receives only the latest buffered result."""
 
     metadata_ready = Signal(object)
     status = Signal(str)
-    model_status = Signal(str, str)
+    model_status = Signal(str, object)
     error = Signal(str)
     finished = Signal()
 
@@ -508,17 +536,27 @@ class VisionWorker(QObject):
         self._stop_requested = threading.Event()
         self._model_lock = threading.Lock()
         self._settings_lock = threading.Lock()
-        self._requested_model: Path | None = None
+        self._requested_model: ModelLoadRequest | None = None
         self._model_generation = 0
         initial_model = self.settings.get("model_path")
         if initial_model:
-            self._requested_model = Path(str(initial_model))
+            self._requested_model = ModelLoadRequest(
+                Path(str(initial_model)),
+                str(self.settings.get("model_sha256")) if self.settings.get("model_sha256") else None,
+                "saved camera profile model",
+            )
             self._model_generation = 1
         self._adapter: InferenceAdapter | None = None
 
-    def request_model_load(self, path: Path | None) -> None:
+    def request_model_load(
+        self,
+        path: Path | None,
+        *,
+        expected_sha256: str | None = None,
+        label: str = "model",
+    ) -> None:
         with self._model_lock:
-            self._requested_model = path
+            self._requested_model = ModelLoadRequest(path, expected_sha256, label) if path is not None else None
             self._model_generation += 1
 
     def update_settings(self, settings: Mapping[str, Any]) -> None:
@@ -532,7 +570,7 @@ class VisionWorker(QObject):
     def stop(self) -> None:
         self._stop_requested.set()
 
-    def _take_model_request(self) -> tuple[Path | None, int]:
+    def _take_model_request(self) -> tuple[ModelLoadRequest | None, int]:
         with self._model_lock:
             return self._requested_model, self._model_generation
 
@@ -554,17 +592,16 @@ class VisionWorker(QObject):
             requested_camera = dict(initial_settings.get("requested_camera", {}))
             readback_camera = apply_camera_properties(capture, requested_camera)
             backend = _capture_backend(capture)
-            metadata = {
-                "source_type": "camera",
-                "camera_index": self.camera_index,
-                "backend": backend,
-                "requested_camera": requested_camera,
-                "readback_camera": readback_camera,
-                "readback_width": float(capture.get(cv2.CAP_PROP_FRAME_WIDTH)),
-                "readback_height": float(capture.get(cv2.CAP_PROP_FRAME_HEIGHT)),
-                "readback_fps": float(capture.get(cv2.CAP_PROP_FPS)),
-            }
-            self.metadata_ready.emit(metadata)
+            applied_camera = dict(requested_camera)
+            self.metadata_ready.emit(
+                _capture_metadata(
+                    capture,
+                    camera_index=self.camera_index,
+                    backend=backend,
+                    requested_camera=requested_camera,
+                    readback_camera=readback_camera,
+                )
+            )
             self.status.emit("Camera live. Preview is active; inference is optional.")
             frame_id = 0
             loaded_generation = 0
@@ -581,6 +618,19 @@ class VisionWorker(QObject):
                     break
                 frame_id += 1
                 settings = self._settings_snapshot()
+                requested_camera = dict(settings.get("requested_camera", {}))
+                if requested_camera != applied_camera:
+                    readback_camera = apply_camera_properties(capture, requested_camera)
+                    applied_camera = dict(requested_camera)
+                    self.metadata_ready.emit(
+                        _capture_metadata(
+                            capture,
+                            camera_index=self.camera_index,
+                            backend=backend,
+                            requested_camera=requested_camera,
+                            readback_camera=readback_camera,
+                        )
+                    )
                 try:
                     result = process_frame(
                         frame,
@@ -617,9 +667,22 @@ class VisionWorker(QObject):
                 CameraOwnership.release("vision")
             self.finished.emit()
 
-    def _load_model(self, model_path: Path) -> None:
+    def _load_model(self, request: ModelLoadRequest) -> None:
+        model_path = request.path.expanduser().resolve()
         self.status.emit(f"Loading local model: {model_path.name}")
         try:
+            if model_path.suffix.lower() not in SUPPORTED_MODEL_EXTENSIONS:
+                raise ModelLoadError("Choose a local .pt or .onnx model file.")
+            if not model_path.is_file():
+                if request.expected_sha256:
+                    raise ModelLoadError(f"{request.label} was moved or deleted: {model_path}")
+                raise ModelLoadError(f"Model file does not exist: {model_path}")
+            current_sha = model_sha256(model_path)
+            if request.expected_sha256 and current_sha.lower() != request.expected_sha256.lower():
+                raise ModelLoadError(
+                    f"{request.label} changed since it was recorded. "
+                    f"Expected SHA-256 {request.expected_sha256}; found {current_sha}."
+                )
             adapter = self.adapter_loader(validate_model_path(model_path))
         except Exception as error:
             self._adapter = None
@@ -627,7 +690,14 @@ class VisionWorker(QObject):
             self.error.emit(str(error))
             return
         self._adapter = adapter
-        self.model_status.emit("loaded", str(getattr(adapter, "device", "unknown")))
+        self.model_status.emit(
+            "loaded",
+            {
+                "device": str(getattr(adapter, "device", "unknown")),
+                "path": str(model_path),
+                "sha256": current_sha,
+            },
+        )
         self.status.emit(f"Model loaded. Inference device: {getattr(adapter, 'device', 'unknown')}")
 
 
