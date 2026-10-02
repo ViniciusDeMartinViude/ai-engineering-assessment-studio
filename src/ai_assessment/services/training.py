@@ -36,6 +36,7 @@ OFFICIAL_DETECTION_MODELS = frozenset(
     for size in "nsmlx"
 )
 OFFICIAL_WEIGHTS_REPO = "ultralytics/assets"
+_OFFICIAL_DOWNLOAD_LOCK = threading.Lock()
 
 
 class TrainingError(ValueError):
@@ -261,23 +262,25 @@ def resolve_base_weights(
             "enter an official detection model name such as yolo26n.pt."
         )
     target = workspace.resolve_inside("models", "base_weights", path.name)
-    target.parent.mkdir(parents=True, exist_ok=True)
     downloaded = False
-    if not target.is_file():
-        if on_output:
-            on_output(f"Downloading official Ultralytics model {path.name} to {target} ...")
-        try:
-            actual = _download_official_weights(target).expanduser().resolve()
-        except Exception as error:
-            raise TrainingError(
-                f"Could not download {path.name} from official Ultralytics assets. "
-                "Allow GitHub release downloads on the router, or browse an existing local .pt file. "
-                f"Details: {error}"
-            ) from error
-        if actual != target or not target.is_file():
-            raise TrainingError(f"Official model download did not produce the expected file: {target}")
-        downloaded = True
-    resolved = validate_base_weights(workspace, target)
+    # Serialize cache writes across concurrent Training starts in this process.
+    with _OFFICIAL_DOWNLOAD_LOCK:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if not target.is_file():
+            if on_output:
+                on_output(f"Downloading official Ultralytics model {path.name} to {target} ...")
+            try:
+                actual = _download_official_weights(target).expanduser().resolve()
+            except Exception as error:
+                raise TrainingError(
+                    f"Could not download {path.name} from official Ultralytics assets. "
+                    "Allow GitHub release downloads on the router, or browse an existing local .pt file. "
+                    f"Details: {error}"
+                ) from error
+            if actual != target or not target.is_file():
+                raise TrainingError(f"Official model download did not produce the expected file: {target}")
+            downloaded = True
+        resolved = validate_base_weights(workspace, target)
     if on_output:
         on_output(f"{'Downloaded' if downloaded else 'Using cached'} model: {resolved}")
     return resolved, {
