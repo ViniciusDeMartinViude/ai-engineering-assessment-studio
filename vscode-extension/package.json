@@ -1,0 +1,217 @@
+{
+  "name": "ai-engineering-assessment",
+  "displayName": "AI Engineering Assessment",
+  "description": "VS Code client for the AI Engineering Assessment Studio local agent, robot service, and organizer AI gateway.",
+  "version": "0.1.0",
+  "publisher": "ai-engineering",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Education",
+    "Other"
+  ],
+  "activationEvents": [
+    "onView:aiEngineering.assessment",
+    "onView:aiEngineering.aiAssistant",
+    "onView:aiEngineering.robot",
+    "onCommand:aiEngineering.refreshAssessment",
+    "onCommand:aiEngineering.robot.health",
+    "onCommand:aiEngineering.ai.ask"
+  ],
+  "main": "./out/src/extension.js",
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "test": "npm run compile && node --test out/test/**/*.test.js",
+    "package": "vsce package"
+  },
+  "contributes": {
+    "configuration": {
+      "title": "AI Engineering",
+      "properties": {
+        "aiEngineering.agentUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:8787",
+          "description": "Loopback URL for the local AI Engineering assessment agent."
+        },
+        "aiEngineering.gatewayUrl": {
+          "type": "string",
+          "default": "",
+          "description": "Organizer AI gateway URL. Leave blank to use AI_GATEWAY_URL from the extension host environment."
+        }
+      }
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "aiEngineering",
+          "title": "AI Engineering",
+          "icon": "media/activity.svg"
+        }
+      ]
+    },
+    "views": {
+      "aiEngineering": [
+        {
+          "id": "aiEngineering.assessment",
+          "name": "Assessment",
+          "type": "tree"
+        },
+        {
+          "id": "aiEngineering.aiAssistant",
+          "name": "AI Assistant",
+          "type": "webview"
+        },
+        {
+          "id": "aiEngineering.robot",
+          "name": "Robot",
+          "type": "webview"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "aiEngineering.refreshAssessment",
+        "title": "AI Engineering: Refresh Assessment"
+      },
+      {
+        "command": "aiEngineering.robot.health",
+        "title": "AI Engineering: Robot Health"
+      },
+      {
+        "command": "aiEngineering.robot.refreshPositions",
+        "title": "AI Engineering: Refresh Robot Positions"
+      },
+      {
+        "command": "aiEngineering.robot.openControl",
+        "title": "AI Engineering: Open Robot Control"
+      },
+      {
+        "command": "aiEngineering.robot.suctionOn",
+        "title": "AI Engineering: Suction On"
+      },
+      {
+        "command": "aiEngineering.robot.suctionOff",
+        "title": "AI Engineering: Suction Off"
+      },
+      {
+        "command": "aiEngineering.robot.moveP1High",
+        "title": "AI Engineering: Move Robot to P1 High"
+      },
+      {
+        "command": "aiEngineering.robot.moveP1Low",
+        "title": "AI Engineering: Move Robot to P1 Low"
+      },
+      {
+        "command": "aiEngineering.robot.moveP2High",
+        "title": "AI Engineering: Move Robot to P2 High"
+      },
+      {
+        "command": "aiEngineering.robot.moveP2Low",
+        "title": "AI Engineering: Move Robot to P2 Low"
+      },
+      {
+        "command": "aiEngineering.robot.moveP3High",
+        "title": "AI Engineering: Move Robot to P3 High"
+      },
+      {
+        "command": "aiEngineering.robot.moveP3Low",
+        "title": "AI Engineering: Move Robot to P3 Low"
+      },
+      {
+        "command": "aiEngineering.robot.moveP4High",
+        "title": "AI Engineering: Move Robot to P4 High"
+      },
+      {
+        "command": "aiEngineering.robot.moveP4Low",
+        "title": "AI Engineering: Move Robot to P4 Low"
+      },
+      {
+        "command": "aiEngineering.robot.moveP5High",
+        "title": "AI Engineering: Move Robot to P5 High"
+      },
+      {
+        "command": "aiEngineering.robot.moveP5Low",
+        "title": "AI Engineering: Move Robot to P5 Low"
+      },
+      {
+        "command": "aiEngineering.ai.ask",
+        "title": "AI Engineering: Ask AI"
+      },
+      {
+        "command": "aiEngineering.ai.explainSelection",
+        "title": "AI Engineering: Explain Selection"
+      },
+      {
+        "command": "aiEngineering.ai.fixSelection",
+        "title": "AI Engineering: Fix Selection"
+      },
+      {
+        "command": "aiEngineering.ai.improveSelection",
+        "title": "AI Engineering: Improve Selection"
+      },
+      {
+        "command": "aiEngineering.ai.explainError",
+        "title": "AI Engineering: Explain Error"
+      },
+      {
+        "command": "aiEngineering.ai.generateCode",
+        "title": "AI Engineering: Generate Code"
+      },
+      {
+        "command": "aiEngineering.ai.insertAtCursor",
+        "title": "AI Engineering: Insert AI Code at Cursor"
+      },
+      {
+        "command": "aiEngineering.ai.replaceSelection",
+        "title": "AI Engineering: Replace Selection with AI Code"
+      },
+      {
+        "command": "aiEngineering.ai.openUntitled",
+        "title": "AI Engineering: Open AI Code as New File"
+      },
+      {
+        "command": "aiEngineering.ai.previewDiff",
+        "title": "AI Engineering: Preview AI Code Diff"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "aiEngineering.refreshAssessment",
+          "when": "view == aiEngineering.assessment",
+          "group": "navigation"
+        },
+        {
+          "command": "aiEngineering.robot.health",
+          "when": "view == aiEngineering.robot",
+          "group": "navigation"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "aiEngineering.ai.explainSelection",
+          "when": "editorHasSelection",
+          "group": "aiEngineering"
+        },
+        {
+          "command": "aiEngineering.ai.fixSelection",
+          "when": "editorHasSelection",
+          "group": "aiEngineering"
+        },
+        {
+          "command": "aiEngineering.ai.improveSelection",
+          "when": "editorHasSelection",
+          "group": "aiEngineering"
+        }
+      ]
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/vscode": "^1.90.0",
+    "@vscode/vsce": "^2.32.0",
+    "typescript": "^5.5.0"
+  }
+}
