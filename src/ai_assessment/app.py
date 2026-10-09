@@ -90,6 +90,8 @@ def main(argv: list[str] | None = None) -> int:
             QListWidget,
             QListWidgetItem,
             QMainWindow,
+            QScrollArea,
+            QSizePolicy,
             QStackedWidget,
             QVBoxLayout,
             QWidget,
@@ -178,6 +180,8 @@ def main(argv: list[str] | None = None) -> int:
             sidebar_layout.addWidget(self.nav, 1)
 
             self.stack = QStackedWidget()
+            self.stack.setMinimumSize(0, 0)
+            self.stack.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Ignored)
             self.calibration_page = None
             self.dataset_page = None
             self.vision_page = None
@@ -195,30 +199,30 @@ def main(argv: list[str] | None = None) -> int:
             for page in PAGES:
                 if page.title == "Calibration":
                     self.calibration_page = CalibrationPage(workspace)
-                    self.stack.addWidget(self.calibration_page)
+                    self.add_page(self.calibration_page)
                 elif page.title == "Dataset":
                     self.dataset_page = DatasetPage(workspace)
-                    self.stack.addWidget(self.dataset_page)
+                    self.add_page(self.dataset_page)
                 elif page.title == "Vision":
                     self.vision_page = VisionPage(workspace)
-                    self.stack.addWidget(self.vision_page)
+                    self.add_page(self.vision_page)
                 elif page.title == "Robot":
                     self.robot_page = RobotPage(workspace)
-                    self.stack.addWidget(self.robot_page)
+                    self.add_page(self.robot_page)
                 elif page.title == "Training":
                     self.training_page = TrainingPage(workspace)
-                    self.stack.addWidget(self.training_page)
+                    self.add_page(self.training_page)
                 elif page.title == "Results":
                     self.results_page = ResultsPage(workspace)
-                    self.stack.addWidget(self.results_page)
+                    self.add_page(self.results_page)
                 elif page.title == "IDE":
                     self.ide_page = IDEPage(workspace, context_buffer, coordinator)
-                    self.stack.addWidget(self.ide_page)
+                    self.add_page(self.ide_page)
                 elif page.title == "AI Assistant":
                     self.ai_page = AIAssistantPage(workspace, context_buffer, coordinator)
-                    self.stack.addWidget(self.ai_page)
+                    self.add_page(self.ai_page)
                 else:
-                    self.stack.addWidget(Page(page))
+                    self.add_page(Page(page))
             self.nav.currentRowChanged.connect(self.stack.setCurrentIndex)
             self.nav.setCurrentRow(0)
 
@@ -226,6 +230,18 @@ def main(argv: list[str] | None = None) -> int:
             root.addWidget(self.stack, 1)
             self.setCentralWidget(container)
             self.statusBar().showMessage(self.status_message())
+
+        def add_page(self, page: QWidget) -> None:
+            scroll = QScrollArea()
+            scroll.setObjectName("pageScroll")
+            scroll.setFrameShape(QFrame.Shape.NoFrame)
+            scroll.setWidgetResizable(True)
+            scroll.setMinimumSize(0, 0)
+            scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Ignored)
+            scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+            scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+            scroll.setWidget(page)
+            self.stack.addWidget(scroll)
 
         def status_message(self) -> str:
             total = len(workspace.events.read_events())
