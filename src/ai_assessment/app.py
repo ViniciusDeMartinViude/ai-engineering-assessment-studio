@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -12,16 +13,53 @@ from .modules.pages import PAGES, PageDefinition
 DEFAULT_CANDIDATE_ID = "C014"
 
 
-def default_workspace_root() -> Path:
+def default_workspace_root(candidate_id: str | None = None) -> Path:
     configured = os.environ.get("AI_ASSESSMENT_WORKSPACE")
     if configured:
         return Path(configured)
-    return Path.cwd() / "candidate_workspaces" / DEFAULT_CANDIDATE_ID
+    current = Path.cwd()
+    if (current / "session.json").is_file():
+        return current
+    workspace_parent = current / "candidate_workspaces"
+    if candidate_id:
+        return workspace_parent / candidate_id
+    existing = [
+        folder for folder in workspace_parent.iterdir()
+        if folder.is_dir()
+        and candidate_id_from_folder(folder)
+        and (folder / "session.json").is_file()
+    ] if workspace_parent.is_dir() else []
+    if len(existing) == 1:
+        return existing[0]
+    if len(existing) > 1:
+        raise ValueError(
+            "Multiple candidate workspaces found. Choose one with "
+            "--workspace candidate_workspaces/C###."
+        )
+    return workspace_parent / DEFAULT_CANDIDATE_ID
+
+
+def candidate_id_from_folder(path: Path) -> str | None:
+    name = path.name.upper()
+    return name if re.fullmatch(r"C[0-9]+", name) else None
 
 
 def load_workspace(path: Path, candidate_id: str | None = None) -> CandidateWorkspace:
+    folder_id = candidate_id_from_folder(path)
+    if folder_id and candidate_id and folder_id != candidate_id:
+        raise ValueError(
+            f"Candidate ID mismatch: workspace folder {folder_id} does not match "
+            f"--candidate-id {candidate_id}."
+        )
     if (path / "session.json").exists():
         workspace = CandidateWorkspace.open(path)
+        if folder_id and workspace.session.candidate_id != folder_id:
+            raise ValueError(
+                f"Workspace folder {folder_id} contains a session for "
+                f"{workspace.session.candidate_id}. Open the original candidate folder "
+                "or create a new workspace with the correct candidate ID; "
+                "do not relabel an existing session with assessment events."
+            )
         if (
             candidate_id is not None
             and candidate_id != workspace.session.candidate_id
@@ -35,7 +73,7 @@ def load_workspace(path: Path, candidate_id: str | None = None) -> CandidateWork
         return workspace
     return CandidateWorkspace.create(
         path,
-        candidate_id=candidate_id or DEFAULT_CANDIDATE_ID,
+        candidate_id=candidate_id or folder_id or DEFAULT_CANDIDATE_ID,
         mode="training",
     )
 
@@ -45,15 +83,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--workspace",
         type=Path,
-        default=default_workspace_root(),
-        help="Candidate workspace folder. Defaults to ./candidate_workspaces/C014.",
+        default=None,
+        help="Candidate workspace folder. Uses the current workspace, a single existing candidate workspace, or ./candidate_workspaces/C014.",
     )
     parser.add_argument(
         "--candidate-id",
         default=None,
         help=(
-            "Candidate identifier for a newly created workspace. "
-            f"Defaults to {DEFAULT_CANDIDATE_ID}; when reopening, omit it or match session.json."
+            "Candidate identifier for a new workspace. Defaults to the candidate-style "
+            f"workspace folder name (or {DEFAULT_CANDIDATE_ID} for a generic folder); "
+            "when reopening, it must match session.json."
         ),
     )
     parser.add_argument(
@@ -68,7 +107,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
-        workspace = load_workspace(args.workspace, args.candidate_id)
+        workspace_path = args.workspace or default_workspace_root(args.candidate_id)
+        workspace = load_workspace(workspace_path, args.candidate_id)
     except ValueError as exc:
         parser.error(str(exc))
 
