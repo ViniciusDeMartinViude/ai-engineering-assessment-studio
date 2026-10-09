@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -12,16 +13,53 @@ from .modules.pages import PAGES, PageDefinition
 DEFAULT_CANDIDATE_ID = "C014"
 
 
-def default_workspace_root() -> Path:
+def default_workspace_root(candidate_id: str | None = None) -> Path:
     configured = os.environ.get("AI_ASSESSMENT_WORKSPACE")
     if configured:
         return Path(configured)
-    return Path.cwd() / "candidate_workspaces" / DEFAULT_CANDIDATE_ID
+    current = Path.cwd()
+    if (current / "session.json").is_file():
+        return current
+    workspace_parent = current / "candidate_workspaces"
+    if candidate_id:
+        return workspace_parent / candidate_id
+    existing = [
+        folder for folder in workspace_parent.iterdir()
+        if folder.is_dir()
+        and candidate_id_from_folder(folder)
+        and (folder / "session.json").is_file()
+    ] if workspace_parent.is_dir() else []
+    if len(existing) == 1:
+        return existing[0]
+    if len(existing) > 1:
+        raise ValueError(
+            "Multiple candidate workspaces found. Choose one with "
+            "--workspace candidate_workspaces/C###."
+        )
+    return workspace_parent / DEFAULT_CANDIDATE_ID
+
+
+def candidate_id_from_folder(path: Path) -> str | None:
+    name = path.name.upper()
+    return name if re.fullmatch(r"C[0-9]+", name) else None
 
 
 def load_workspace(path: Path, candidate_id: str | None = None) -> CandidateWorkspace:
+    folder_id = candidate_id_from_folder(path)
+    if folder_id and candidate_id and folder_id != candidate_id:
+        raise ValueError(
+            f"Candidate ID mismatch: workspace folder {folder_id} does not match "
+            f"--candidate-id {candidate_id}."
+        )
     if (path / "session.json").exists():
         workspace = CandidateWorkspace.open(path)
+        if folder_id and workspace.session.candidate_id != folder_id:
+            raise ValueError(
+                f"Workspace folder {folder_id} contains a session for "
+                f"{workspace.session.candidate_id}. Open the original candidate folder "
+                "or create a new workspace with the correct candidate ID; "
+                "do not relabel an existing session with assessment events."
+            )
         if (
             candidate_id is not None
             and candidate_id != workspace.session.candidate_id
@@ -35,7 +73,7 @@ def load_workspace(path: Path, candidate_id: str | None = None) -> CandidateWork
         return workspace
     return CandidateWorkspace.create(
         path,
-        candidate_id=candidate_id or DEFAULT_CANDIDATE_ID,
+        candidate_id=candidate_id or folder_id or DEFAULT_CANDIDATE_ID,
         mode="training",
     )
 
@@ -45,15 +83,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--workspace",
         type=Path,
-        default=default_workspace_root(),
-        help="Candidate workspace folder. Defaults to ./candidate_workspaces/C014.",
+        default=None,
+        help="Candidate workspace folder. Uses the current workspace, a single existing candidate workspace, or ./candidate_workspaces/C014.",
     )
     parser.add_argument(
         "--candidate-id",
         default=None,
         help=(
-            "Candidate identifier for a newly created workspace. "
-            f"Defaults to {DEFAULT_CANDIDATE_ID}; when reopening, omit it or match session.json."
+            "Candidate identifier for a new workspace. Defaults to the candidate-style "
+            f"workspace folder name (or {DEFAULT_CANDIDATE_ID} for a generic folder); "
+            "when reopening, it must match session.json."
         ),
     )
     parser.add_argument(
@@ -68,7 +107,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
-        workspace = load_workspace(args.workspace, args.candidate_id)
+        workspace_path = args.workspace or default_workspace_root(args.candidate_id)
+        workspace = load_workspace(workspace_path, args.candidate_id)
     except ValueError as exc:
         parser.error(str(exc))
 
@@ -90,6 +130,8 @@ def main(argv: list[str] | None = None) -> int:
             QListWidget,
             QListWidgetItem,
             QMainWindow,
+            QScrollArea,
+            QSizePolicy,
             QStackedWidget,
             QVBoxLayout,
             QWidget,
@@ -178,6 +220,8 @@ def main(argv: list[str] | None = None) -> int:
             sidebar_layout.addWidget(self.nav, 1)
 
             self.stack = QStackedWidget()
+            self.stack.setMinimumSize(0, 0)
+            self.stack.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Ignored)
             self.calibration_page = None
             self.dataset_page = None
             self.vision_page = None
@@ -195,30 +239,30 @@ def main(argv: list[str] | None = None) -> int:
             for page in PAGES:
                 if page.title == "Calibration":
                     self.calibration_page = CalibrationPage(workspace)
-                    self.stack.addWidget(self.calibration_page)
+                    self.add_page(self.calibration_page)
                 elif page.title == "Dataset":
                     self.dataset_page = DatasetPage(workspace)
-                    self.stack.addWidget(self.dataset_page)
+                    self.add_page(self.dataset_page)
                 elif page.title == "Vision":
                     self.vision_page = VisionPage(workspace)
-                    self.stack.addWidget(self.vision_page)
+                    self.add_page(self.vision_page)
                 elif page.title == "Robot":
                     self.robot_page = RobotPage(workspace)
-                    self.stack.addWidget(self.robot_page)
+                    self.add_page(self.robot_page)
                 elif page.title == "Training":
                     self.training_page = TrainingPage(workspace)
-                    self.stack.addWidget(self.training_page)
+                    self.add_page(self.training_page)
                 elif page.title == "Results":
                     self.results_page = ResultsPage(workspace)
-                    self.stack.addWidget(self.results_page)
+                    self.add_page(self.results_page)
                 elif page.title == "IDE":
                     self.ide_page = IDEPage(workspace, context_buffer, coordinator)
-                    self.stack.addWidget(self.ide_page)
+                    self.add_page(self.ide_page)
                 elif page.title == "AI Assistant":
                     self.ai_page = AIAssistantPage(workspace, context_buffer, coordinator)
-                    self.stack.addWidget(self.ai_page)
+                    self.add_page(self.ai_page)
                 else:
-                    self.stack.addWidget(Page(page))
+                    self.add_page(Page(page))
             self.nav.currentRowChanged.connect(self.stack.setCurrentIndex)
             self.nav.setCurrentRow(0)
 
@@ -226,6 +270,18 @@ def main(argv: list[str] | None = None) -> int:
             root.addWidget(self.stack, 1)
             self.setCentralWidget(container)
             self.statusBar().showMessage(self.status_message())
+
+        def add_page(self, page: QWidget) -> None:
+            scroll = QScrollArea()
+            scroll.setObjectName("pageScroll")
+            scroll.setFrameShape(QFrame.Shape.NoFrame)
+            scroll.setWidgetResizable(True)
+            scroll.setMinimumSize(0, 0)
+            scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Ignored)
+            scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+            scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+            scroll.setWidget(page)
+            self.stack.addWidget(scroll)
 
         def status_message(self) -> str:
             total = len(workspace.events.read_events())
