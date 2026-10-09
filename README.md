@@ -58,7 +58,15 @@ Create or reopen the default `C014` workspace and launch the desktop shell:
 python -m ai_assessment --workspace candidate_workspaces\C014
 ```
 
-The candidate ID is only needed when creating a new workspace. When reopening an existing workspace, omit `--candidate-id` or provide the ID already stored in `session.json`. A different explicit ID is rejected.
+The sidebar shows the candidate ID saved in the active workspace's `session.json`. For a new candidate workspace, use its ID as the folder name; the app will assign that ID automatically:
+
+```bat
+python -m ai_assessment --workspace candidate_workspaces\C015
+```
+
+Alternatively, `python -m ai_assessment --candidate-id C015` creates or opens `candidate_workspaces/C015` when no workspace path is provided. From inside an existing candidate workspace, the app reopens that workspace. From the repository root, it automatically opens a single existing candidate workspace; when several exist, provide `--workspace` so the app does not guess. Without any existing workspace or candidate ID, the practice default remains `C014`.
+
+When reopening, the saved session ID must match a candidate-style folder name and any explicit `--candidate-id`. If an older run created `candidate_workspaces/C015/session.json` with `C014`, startup reports the mismatch instead of displaying the wrong identity. Preserve that workspace and its audit events; create a correctly identified workspace for new work rather than editing `session.json` by hand.
 
 Run the non-GUI workspace check:
 
