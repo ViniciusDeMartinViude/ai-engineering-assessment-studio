@@ -30,6 +30,26 @@ On a CPU-only PC, omit the CUDA PyTorch command. If CUDA verification fails, che
 
 If the repository is in a different folder, replace the `cd` path. The editable install makes the `ai_assessment` package available to the commands below.
 
+## macOS setup (practice use)
+
+Install a native macOS Conda distribution (Miniforge or Anaconda) for your Mac's architecture. From Terminal in this repository, run:
+
+```bash
+bash install_macos.sh
+```
+
+The script asks for an environment name (default `ai-assessment-studio`), creates or reuses a Python 3.12 Conda environment, installs the macOS PyTorch wheels and `.[gui]`, then checks that the application imports and that a CPU or MPS tensor can be created. If Conda is not found, initialize it with `conda init zsh` (or `conda init bash` for Bash), reopen Terminal, and rerun the script. Existing environments must use Python 3.12.
+
+After setup, open a new Terminal in the repository:
+
+```bash
+conda activate ai-assessment-studio
+python -m ai_assessment --headless-check --workspace candidate_workspaces/C014
+python -m ai_assessment --workspace candidate_workspaces/C014
+```
+
+On Apple Silicon, select `mps` in Training when the installer reports `device: mps`; otherwise select `cpu`. Intel Macs install the last available compatible PyTorch 2.2.2 / torchvision 0.17.2 wheels and train on CPU. macOS does not use the Windows CUDA PyTorch wheels. This is a developer/practice install; the official assessment workstation remains the Windows 11 baseline. A real Mac test of the camera, training, and simulator is still needed.
+
 ## Run the shell and tests
 
 Create or reopen the default `C014` workspace and launch the desktop shell:
