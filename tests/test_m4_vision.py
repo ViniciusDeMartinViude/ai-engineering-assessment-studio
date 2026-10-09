@@ -9,6 +9,7 @@ from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import numpy as np
+import cv2
 
 from ai_assessment.core.workspace import CandidateWorkspace
 from ai_assessment.services.calibration import CalibrationGeometryMismatchError, CalibrationService
@@ -21,6 +22,7 @@ from ai_assessment.services.vision import (
     ModelLoadError,
     RawDetection,
     VisionProfile,
+    VisionError,
     VisionWorker,
     apply_camera_properties,
     apply_software_correction,
@@ -30,6 +32,7 @@ from ai_assessment.services.vision import (
     save_profile,
     load_profile,
     validate_model_path,
+    validate_video_path,
 )
 
 
@@ -109,6 +112,67 @@ class VisionServiceTests(unittest.TestCase):
         CameraOwnership.release("calibration")
         self.assertTrue(CameraOwnership.acquire("vision"))
         CameraOwnership.release("vision")
+
+    def test_video_profile_and_legacy_camera_profile(self) -> None:
+        profile = VisionProfile(source_type="video", video_path="C:/videos/fruit.mp4", brightness=14, contrast=1.3)
+        self.assertEqual(VisionProfile.from_dict(profile.to_dict()).to_dict(), profile.to_dict())
+        self.assertEqual(VisionProfile.from_dict({"schema_version": "m4.vision.v1"}).source_type, "camera")
+        with self.assertRaises(VisionError):
+            VisionProfile.from_dict({"source_type": "unsupported"})
+
+    def test_video_validation_and_worker_loops_without_camera_ownership(self) -> None:
+        class LoopingCapture(FakeCapture):
+            def __init__(self) -> None:
+                super().__init__(True, [np.full((2, 3, 3), 100, dtype=np.uint8)])
+                self.original = [frame.copy() for frame in self.frames]
+                self.seeks: list[tuple[int, float]] = []
+
+            def get(self, prop: int) -> float:
+                return 30.0 if prop == cv2.CAP_PROP_FPS else 3.0
+
+            def set(self, prop: int, value: float) -> bool:
+                self.seeks.append((prop, value))
+                if prop == cv2.CAP_PROP_POS_FRAMES and value == 0:
+                    self.frames = [frame.copy() for frame in self.original]
+                    return True
+                return False
+
+        with tempfile.TemporaryDirectory() as directory:
+            video = Path(directory) / "fruit.mp4"
+            video.write_bytes(b"fake video handled by the capture factory")
+            self.assertEqual(validate_video_path(video), video.resolve())
+            with self.assertRaises(VisionError):
+                validate_video_path(Path(directory) / "missing.mp4")
+            capture = LoopingCapture()
+            observed: list[object] = []
+            class StopAfterThree(LatestFrameBuffer):
+                def publish(self, result: object) -> None:
+                    observed.append(result)
+                    super().publish(result)
+                    if len(observed) == 3:
+                        worker.stop()
+
+            buffer = StopAfterThree()
+            worker = VisionWorker(
+                0,
+                {"brightness": 10, "contrast": 2, "requested_camera": {"exposure": -6}},
+                buffer,
+                source_type="video",
+                video_path=video,
+                video_capture_factory=lambda path: capture,
+                capture_factory=lambda camera_index: self.fail("Camera should not be opened"),
+            )
+            CameraOwnership.release("calibration")
+            self.assertTrue(CameraOwnership.acquire("calibration"))
+            try:
+                worker.run()
+                self.assertEqual(CameraOwnership.current_owner(), "calibration")
+            finally:
+                CameraOwnership.release("calibration")
+            self.assertEqual([result.frame_id for result in observed], [1, 2, 3])
+            self.assertEqual(int(observed[-1].processed_bgr[0, 0, 0]), 210)
+            self.assertEqual(capture.seeks, [(cv2.CAP_PROP_POS_FRAMES, 0)] * 2)
+            self.assertTrue(capture.released)
 
     def test_resize_and_padding_are_reversed_before_roi_offset(self) -> None:
         # A 200x100 ROI letterboxed into 400x400 has scale 2 and 100px vertical padding.
@@ -390,6 +454,35 @@ class VisionServiceTests(unittest.TestCase):
                 page._use_selected_model()
                 self.assertEqual(Path(page.model_path.text()), checkpoint)
                 self.assertEqual(page._current_model_expected_sha, sha256_file(checkpoint))
+            finally:
+                page.shutdown()
+
+    def test_video_source_disables_camera_controls_but_keeps_image_adjustments(self) -> None:
+        from PySide6.QtWidgets import QApplication
+
+        from ai_assessment.modules.vision import VisionPage
+
+        app = QApplication.instance() or QApplication([])
+        del app
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = CandidateWorkspace.create(Path(directory) / "C014", candidate_id="C014")
+            page = VisionPage(workspace)
+            try:
+                page.source_combo.setCurrentIndex(1)
+                self.assertFalse(page.camera_index.isEnabled())
+                self.assertFalse(page.camera_group.isEnabled())
+                self.assertTrue(page.video_path.isEnabled())
+                self.assertTrue(page.brightness.isEnabled())
+                self.assertTrue(page.contrast.isEnabled())
+                page.video_path.setText(str(Path(directory) / "fruit.mp4"))
+                page.brightness.setValue(20)
+                page.contrast.setValue(1.5)
+                page._save_profile()
+                saved = load_profile(workspace.root)
+                self.assertEqual(saved.source_type, "video")
+                self.assertEqual(saved.video_path, page.video_path.text())
+                self.assertEqual(saved.brightness, 20)
+                self.assertEqual(saved.contrast, 1.5)
             finally:
                 page.shutdown()
 
