@@ -33,6 +33,7 @@ from ai_assessment.services.vision import (
     load_profile,
     validate_model_path,
     validate_video_path,
+    validate_rtsp_url,
 )
 
 
@@ -173,6 +174,75 @@ class VisionServiceTests(unittest.TestCase):
             self.assertEqual(int(observed[-1].processed_bgr[0, 0, 0]), 210)
             self.assertEqual(capture.seeks, [(cv2.CAP_PROP_POS_FRAMES, 0)] * 2)
             self.assertTrue(capture.released)
+
+    def test_rtsp_url_validation_and_reconnect_without_camera_lock_or_url_logs(self) -> None:
+        url = "rtsp://alice:secret@example.invalid:8554/live?token=private"
+        self.assertEqual(validate_rtsp_url(url), url)
+        for invalid in ("", "http://example.invalid/live", "rtsp:///live", "rtsp://example.invalid:bad/live"):
+            with self.assertRaises(VisionError):
+                validate_rtsp_url(invalid)
+
+        captures = [
+            FakeCapture(True, [np.full((2, 3, 3), 100, dtype=np.uint8)]),
+            FakeCapture(True, [np.full((2, 3, 3), 110, dtype=np.uint8)]),
+        ]
+        addresses: list[str] = []
+        results: list[object] = []
+        class StopAfterTwo(LatestFrameBuffer):
+            def publish(self, result: object) -> None:
+                results.append(result)
+                super().publish(result)
+                if len(results) == 2:
+                    worker.stop()
+
+        def connect(address: str) -> FakeCapture:
+            addresses.append(address)
+            return captures[len(addresses) - 1]
+
+        worker = VisionWorker(
+            0,
+            {"brightness": 10, "contrast": 2, "requested_camera": {"exposure": -6}},
+            StopAfterTwo(),
+            source_type="rtsp",
+            rtsp_url=url,
+            rtsp_capture_factory=connect,
+            capture_factory=lambda camera_index: self.fail("Camera should not be opened"),
+        )
+        statuses: list[str] = []
+        metadata: list[dict[str, object]] = []
+        worker.status.connect(statuses.append)
+        worker.metadata_ready.connect(metadata.append)
+        CameraOwnership.release("calibration")
+        self.assertTrue(CameraOwnership.acquire("calibration"))
+        try:
+            worker.run()
+            self.assertEqual(CameraOwnership.current_owner(), "calibration")
+        finally:
+            CameraOwnership.release("calibration")
+        self.assertEqual(addresses, [url, url])
+        self.assertTrue(all(capture.released for capture in captures))
+        self.assertEqual([result.frame_id for result in results], [1, 2])
+        self.assertEqual(int(results[0].processed_bgr[0, 0, 0]), 210)
+        self.assertIn("Reconnecting", " ".join(statuses))
+        self.assertNotIn("secret", str(statuses) + str(metadata))
+        self.assertNotIn("token=private", str(statuses) + str(metadata))
+
+    def test_rtsp_failed_open_can_be_stopped_without_a_retry_loop(self) -> None:
+        capture = FakeCapture(False)
+        worker = VisionWorker(
+            0, {}, LatestFrameBuffer(), source_type="rtsp",
+            rtsp_url="rtsp://example.invalid/live",
+            rtsp_capture_factory=lambda url: capture,
+        )
+        statuses: list[str] = []
+        def on_status(message: str) -> None:
+            statuses.append(message)
+            if "Retrying" in message:
+                worker.stop()
+        worker.status.connect(on_status)
+        worker.run()
+        self.assertTrue(capture.released)
+        self.assertEqual(sum("Retrying" in message for message in statuses), 1)
 
     def test_resize_and_padding_are_reversed_before_roi_offset(self) -> None:
         # A 200x100 ROI letterboxed into 400x400 has scale 2 and 100px vertical padding.
@@ -483,6 +553,40 @@ class VisionServiceTests(unittest.TestCase):
                 self.assertEqual(saved.video_path, page.video_path.text())
                 self.assertEqual(saved.brightness, 20)
                 self.assertEqual(saved.contrast, 1.5)
+            finally:
+                page.shutdown()
+
+    def test_rtsp_source_keeps_adjustments_but_never_saves_stream_credentials(self) -> None:
+        from PySide6.QtWidgets import QApplication, QLineEdit
+
+        from ai_assessment.modules.vision import VisionPage
+
+        app = QApplication.instance() or QApplication([])
+        del app
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = CandidateWorkspace.create(Path(directory) / "C014", candidate_id="C014")
+            page = VisionPage(workspace)
+            try:
+                page.source_combo.setCurrentIndex(2)
+                self.assertFalse(page.camera_index.isEnabled())
+                self.assertFalse(page.camera_group.isEnabled())
+                self.assertFalse(page.video_path.isEnabled())
+                self.assertTrue(page.rtsp_url.isEnabled())
+                self.assertTrue(page.brightness.isEnabled())
+                self.assertTrue(page.contrast.isEnabled())
+                self.assertEqual(page.rtsp_url.echoMode(), QLineEdit.EchoMode.Password)
+                page.rtsp_url.setText("rtsp://alice:secret@example.invalid/live?token=private")
+                page.brightness.setValue(12)
+                page._save_profile()
+                saved = load_profile(workspace.root)
+                self.assertEqual(saved.source_type, "rtsp")
+                self.assertEqual(saved.brightness, 12)
+                page.snapshot_button.setEnabled(True)
+                page._worker_status("RTSP stream interrupted. Reconnecting in 2 seconds...")
+                self.assertFalse(page.snapshot_button.isEnabled())
+                self.assertTrue(page.raw_view.image.isNull())
+                self.assertNotIn("secret", (workspace.root / "camera" / "vision_profile.json").read_text(encoding="utf-8"))
+                self.assertNotIn("token=private", (workspace.root / "camera" / "vision_profile.json").read_text(encoding="utf-8"))
             finally:
                 page.shutdown()
 

@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol, Sequence
+from urllib.parse import urlsplit
 
 import cv2
 import numpy as np
@@ -127,7 +128,7 @@ class VisionProfile:
             raise VisionError(f"Unsupported vision profile version: {version!r}")
         frame_size = data.get("frame_size")
         source_type = str(data.get("source_type", "camera"))
-        if source_type not in ("camera", "video"):
+        if source_type not in ("camera", "video", "rtsp"):
             raise VisionError(f"Unsupported vision source: {source_type!r}")
         return cls(
             source_type=source_type,
@@ -252,6 +253,22 @@ def validate_model_path(path: Path) -> Path:
     if not model_path.is_file():
         raise ModelLoadError(f"Model file does not exist: {model_path}")
     return model_path
+
+
+def validate_rtsp_url(value: str) -> str:
+    """Validate a stream address without resolving it or persisting credentials."""
+    url = value.strip()
+    if not url or any(ord(character) < 32 for character in url):
+        raise VisionError("Enter an RTSP URL such as rtsp://host:8554/stream.")
+    try:
+        parts = urlsplit(url)
+        host = parts.hostname
+        _ = parts.port
+    except ValueError as error:
+        raise VisionError("Enter a valid RTSP URL with a host and optional port.") from error
+    if parts.scheme.lower() not in ("rtsp", "rtsps") or not host or parts.fragment:
+        raise VisionError("Enter a valid rtsp:// or rtsps:// URL with a host.")
+    return url
 
 
 def validate_video_path(path: Path) -> Path:
@@ -547,6 +564,27 @@ def _video_metadata(capture: Any, video_path: Path) -> dict[str, Any]:
     }
 
 
+def _open_rtsp_capture(url: str) -> Any:
+    """Use an FFmpeg-backed capture so a failed network read can time out."""
+    return cv2.VideoCapture(
+        url,
+        cv2.CAP_FFMPEG,
+        [cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 5000, cv2.CAP_PROP_READ_TIMEOUT_MSEC, 5000],
+    )
+
+
+def _rtsp_metadata(capture: Any) -> dict[str, Any]:
+    return {
+        "source_type": "rtsp",
+        "backend": _capture_backend(capture),
+        "readback_width": float(capture.get(cv2.CAP_PROP_FRAME_WIDTH)),
+        "readback_height": float(capture.get(cv2.CAP_PROP_FRAME_HEIGHT)),
+        "readback_fps": float(capture.get(cv2.CAP_PROP_FPS)),
+        "requested_camera": {},
+        "readback_camera": {},
+    }
+
+
 class VisionWorker(QObject):
     """Capture and inference worker. UI receives only the latest buffered result."""
 
@@ -567,6 +605,8 @@ class VisionWorker(QObject):
         source_type: str = "camera",
         video_path: Path | None = None,
         video_capture_factory: Callable[[str], Any] = cv2.VideoCapture,
+        rtsp_url: str | None = None,
+        rtsp_capture_factory: Callable[[str], Any] = _open_rtsp_capture,
     ) -> None:
         super().__init__()
         if source_type not in ("camera", "video"):
@@ -574,6 +614,8 @@ class VisionWorker(QObject):
         self.source_type = source_type
         self.video_path = video_path
         self.video_capture_factory = video_capture_factory
+        self.rtsp_url = rtsp_url
+        self.rtsp_capture_factory = rtsp_capture_factory
         self.camera_index = int(camera_index)
         self.settings = dict(settings)
         self.buffer = buffer
@@ -626,6 +668,9 @@ class VisionWorker(QObject):
         owned = False
         try:
             video = self.source_type == "video"
+            stream = self.source_type == "rtsp"
+            if stream:
+                rtsp_url = validate_rtsp_url(self.rtsp_url or "")
             if video:
                 if self.video_path is None:
                     raise VisionError("Select a video file before starting playback.")
@@ -638,7 +683,7 @@ class VisionWorker(QObject):
                 self.status.emit(f"Video playing on repeat: {video_path.name}")
                 frame_interval = _video_frame_interval(capture)
                 next_frame_at = time.monotonic()
-            else:
+            elif not stream:
                 if not CameraOwnership.acquire("vision"):
                     owner = CameraOwnership.current_owner() or "another module"
                     self.error.emit(f"Camera is already in use by {owner}.")
@@ -666,14 +711,44 @@ class VisionWorker(QObject):
             frame_id = 0
             loaded_generation = 0
             while not self._stop_requested.is_set():
+                if stream and capture is None:
+                    self.status.emit("Connecting to RTSP stream...")
+                    try:
+                        candidate = self.rtsp_capture_factory(rtsp_url)
+                    except Exception:
+                        candidate = None
+                    try:
+                        connected = candidate is not None and candidate.isOpened()
+                    except Exception:
+                        connected = False
+                    if not connected:
+                        if candidate is not None:
+                            candidate.release()
+                        self.status.emit("RTSP connection unavailable. Retrying in 2 seconds...")
+                        self._stop_requested.wait(2.0)
+                        continue
+                    capture = candidate
+                    self.metadata_ready.emit(_rtsp_metadata(capture))
+                    self.status.emit("RTSP live. Preview is active; inference is optional.")
                 requested_model, generation = self._take_model_request()
                 if generation != loaded_generation:
                     loaded_generation = generation
                     self._adapter = None
                     if requested_model is not None:
                         self._load_model(requested_model)
-                ok, frame = capture.read()
+                try:
+                    ok, frame = capture.read()
+                except Exception:
+                    if not stream:
+                        raise
+                    ok, frame = False, None
                 if not ok:
+                    if stream:
+                        capture.release()
+                        capture = None
+                        self.status.emit("RTSP stream interrupted. Reconnecting in 2 seconds...")
+                        self._stop_requested.wait(2.0)
+                        continue
                     if not video:
                         self.error.emit("Camera frame read failed.")
                         break
@@ -694,7 +769,7 @@ class VisionWorker(QObject):
                     next_frame_at = time.monotonic()
                 frame_id += 1
                 settings = self._settings_snapshot()
-                if not video:
+                if not video and not stream:
                     requested_camera = dict(settings.get("requested_camera", {}))
                     if requested_camera != applied_camera:
                         readback_camera = apply_camera_properties(capture, requested_camera)
@@ -738,10 +813,10 @@ class VisionWorker(QObject):
                         self._stop_requested.wait(remaining)
                     else:
                         next_frame_at = time.monotonic()
-                else:
+                elif not stream:
                     QThread.msleep(15)
         except Exception as error:
-            self.error.emit(str(error))
+            self.error.emit("RTSP stream failed. Check its address and server." if self.source_type == "rtsp" else str(error))
         finally:
             if capture is not None:
                 try:
