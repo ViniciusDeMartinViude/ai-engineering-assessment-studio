@@ -574,7 +574,10 @@ class VisionServiceTests(unittest.TestCase):
                 self.assertTrue(page.rtsp_url.isEnabled())
                 self.assertTrue(page.brightness.isEnabled())
                 self.assertTrue(page.contrast.isEnabled())
+                self.assertEqual(page.rtsp_url.echoMode(), QLineEdit.EchoMode.Normal)
+                page.show_rtsp_url.setChecked(True)
                 self.assertEqual(page.rtsp_url.echoMode(), QLineEdit.EchoMode.Password)
+                page.show_rtsp_url.setChecked(False)
                 page.rtsp_url.setText("rtsp://alice:secret@example.invalid/live?token=private")
                 page.brightness.setValue(12)
                 page._save_profile()
@@ -588,6 +591,36 @@ class VisionServiceTests(unittest.TestCase):
                 self.assertNotIn("secret", (workspace.root / "camera" / "vision_profile.json").read_text(encoding="utf-8"))
                 self.assertNotIn("token=private", (workspace.root / "camera" / "vision_profile.json").read_text(encoding="utf-8"))
             finally:
+                page.shutdown()
+
+    def test_rtsp_url_can_be_edited_before_selection_and_during_playback(self) -> None:
+        from PySide6.QtWidgets import QApplication, QLineEdit
+
+        from ai_assessment.modules.vision import VisionPage
+
+        app = QApplication.instance() or QApplication([])
+        del app
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = CandidateWorkspace.create(Path(directory) / "C014", candidate_id="C014")
+            page = VisionPage(workspace)
+            try:
+                self.assertEqual(page.source_combo.currentData(), "camera")
+                self.assertTrue(page.rtsp_url.isEnabled())
+                self.assertEqual(page.rtsp_url.echoMode(), QLineEdit.EchoMode.Normal)
+                page.rtsp_url.setText("rtsp://example.invalid/first")
+                page._rtsp_url_changed()
+                self.assertEqual(page.source_combo.currentData(), "rtsp")
+                self.assertIn("Start stream", page.status.text())
+
+                page._thread = object()  # Simulate an active source without starting a capture.
+                page._update_source_controls()
+                self.assertTrue(page.rtsp_url.isEnabled())
+                page.rtsp_url.setText("rtsp://example.invalid/second")
+                page._rtsp_url_changed()
+                self.assertIn("Stop", page.status.text())
+                self.assertEqual(page.source_combo.currentData(), "rtsp")
+            finally:
+                page._thread = None
                 page.shutdown()
 
     def test_camera_controls_default_to_manual_and_focus_slider_disables_auto(self) -> None:

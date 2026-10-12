@@ -316,12 +316,13 @@ class VisionPage(QWidget):
         capture_layout.addWidget(QLabel("RTSP URL"), 5, 0)
         self.rtsp_url = QLineEdit()
         self.rtsp_url.setPlaceholderText("rtsp://host:8554/stream")
-        self.rtsp_url.setEchoMode(QLineEdit.EchoMode.Password)
+        self.rtsp_url.setToolTip("Enter a live RTSP address. Changes during playback take effect after Stop and Start.")
+        self.rtsp_url.editingFinished.connect(self._rtsp_url_changed)
         capture_layout.addWidget(self.rtsp_url, 5, 1)
-        self.show_rtsp_url = QCheckBox("Show RTSP URL")
+        self.show_rtsp_url = QCheckBox("Hide RTSP URL")
         self.show_rtsp_url.toggled.connect(
             lambda checked: self.rtsp_url.setEchoMode(
-                QLineEdit.EchoMode.Normal if checked else QLineEdit.EchoMode.Password
+                QLineEdit.EchoMode.Password if checked else QLineEdit.EchoMode.Normal
             )
         )
         capture_layout.addWidget(self.show_rtsp_url, 6, 0, 1, 2)
@@ -609,8 +610,10 @@ class VisionPage(QWidget):
         self.camera_group.setEnabled(camera)
         self.video_path.setEnabled(video and self._thread is None)
         self.browse_video_button.setEnabled(video and self._thread is None)
-        self.rtsp_url.setEnabled(stream and self._thread is None)
-        self.show_rtsp_url.setEnabled(stream)
+        # The address can be prepared while another source is selected or playing.
+        # A running worker keeps its original URL until Stop and Start.
+        self.rtsp_url.setEnabled(True)
+        self.show_rtsp_url.setEnabled(True)
         self.start_button.setText({"camera": "Start camera", "video": "Start video", "rtsp": "Start stream"}[source])
 
     def _source_changed(self, *_args: Any) -> None:
@@ -637,6 +640,19 @@ class VisionPage(QWidget):
             "rtsp": "Enter an RTSP URL and click Start stream.",
         }[self.source_combo.currentData()])
         self._save_profile()
+
+    def _rtsp_url_changed(self) -> None:
+        if self._applying_profile or not self.rtsp_url.text().strip():
+            return
+        if self._thread is not None:
+            self.status.setText(
+                "RTSP URL edited. Stop and Start stream to use it."
+                if self.source_combo.currentData() == "rtsp"
+                else "RTSP URL edited. Stop the current input, select RTSP, then Start stream."
+            )
+            return
+        self.source_combo.setCurrentIndex(2)
+        self.status.setText("RTSP URL ready. Click Start stream to connect.")
 
     def _browse_video(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -809,7 +825,6 @@ class VisionPage(QWidget):
         self.source_combo.setEnabled(False)
         self.video_path.setEnabled(False)
         self.browse_video_button.setEnabled(False)
-        self.rtsp_url.setEnabled(False)
         if source_type == "rtsp":
             self.workspace.record_event("vision.rtsp.started", {})
         elif source_type == "video":
