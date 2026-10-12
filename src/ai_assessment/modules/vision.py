@@ -46,6 +46,7 @@ from ..services.vision import (
     save_snapshot,
     validate_model_path,
     validate_video_path,
+    validate_rtsp_url,
 )
 
 
@@ -260,7 +261,7 @@ class VisionPage(QWidget):
         title = QLabel("Vision Studio")
         title.setObjectName("visionTitle")
         subtitle = QLabel(
-            "View a live camera or looping video, draw an inference ROI, adjust brightness and contrast, and inspect local-model detections without moving the robot."
+            "View a camera, looping video, or RTSP stream; draw an ROI, adjust brightness and contrast, and inspect detections without moving the robot."
         )
         subtitle.setObjectName("visionSubtitle")
         subtitle.setWordWrap(True)
@@ -286,6 +287,7 @@ class VisionPage(QWidget):
         self.source_combo = QComboBox()
         self.source_combo.addItem("Camera", "camera")
         self.source_combo.addItem("Video file (loop)", "video")
+        self.source_combo.addItem("RTSP stream", "rtsp")
         self.source_combo.currentIndexChanged.connect(self._source_changed)
         capture_layout.addWidget(self.source_combo, 0, 1)
         self.start_button = QPushButton("Start camera")
@@ -311,9 +313,21 @@ class VisionPage(QWidget):
         self.browse_video_button.setObjectName("visionSecondary")
         self.browse_video_button.clicked.connect(self._browse_video)
         capture_layout.addWidget(self.browse_video_button, 4, 0, 1, 2)
+        capture_layout.addWidget(QLabel("RTSP URL"), 5, 0)
+        self.rtsp_url = QLineEdit()
+        self.rtsp_url.setPlaceholderText("rtsp://host:8554/stream")
+        self.rtsp_url.setEchoMode(QLineEdit.EchoMode.Password)
+        capture_layout.addWidget(self.rtsp_url, 5, 1)
+        self.show_rtsp_url = QCheckBox("Show RTSP URL")
+        self.show_rtsp_url.toggled.connect(
+            lambda checked: self.rtsp_url.setEchoMode(
+                QLineEdit.EchoMode.Normal if checked else QLineEdit.EchoMode.Password
+            )
+        )
+        capture_layout.addWidget(self.show_rtsp_url, 6, 0, 1, 2)
         self.device_label = QLabel("Device: preview only")
         self.device_label.setObjectName("visionDevice")
-        capture_layout.addWidget(self.device_label, 5, 0, 1, 2)
+        capture_layout.addWidget(self.device_label, 7, 0, 1, 2)
         controls_layout.addWidget(capture_group)
 
         model_group = QGroupBox("Local model")
@@ -539,7 +553,7 @@ class VisionPage(QWidget):
         self._applying_profile = True
         try:
             profile = self._profile
-            self.source_combo.setCurrentIndex(1 if profile.source_type == "video" else 0)
+            self.source_combo.setCurrentIndex({"camera": 0, "video": 1, "rtsp": 2}.get(profile.source_type, 0))
             self.video_path.setText(profile.video_path or "")
             self.camera_index.setValue(profile.camera_index)
             self.confidence.setValue(profile.confidence)
@@ -587,12 +601,17 @@ class VisionPage(QWidget):
         }
 
     def _update_source_controls(self) -> None:
-        video = self.source_combo.currentData() == "video"
-        self.camera_index.setEnabled(not video)
-        self.camera_group.setEnabled(not video)
+        source = self.source_combo.currentData()
+        camera = source == "camera"
+        video = source == "video"
+        stream = source == "rtsp"
+        self.camera_index.setEnabled(camera)
+        self.camera_group.setEnabled(camera)
         self.video_path.setEnabled(video and self._thread is None)
         self.browse_video_button.setEnabled(video and self._thread is None)
-        self.start_button.setText("Start video" if video else "Start camera")
+        self.rtsp_url.setEnabled(stream and self._thread is None)
+        self.show_rtsp_url.setEnabled(stream)
+        self.start_button.setText({"camera": "Start camera", "video": "Start video", "rtsp": "Start stream"}[source])
 
     def _source_changed(self, *_args: Any) -> None:
         self._update_source_controls()
@@ -607,12 +626,16 @@ class VisionPage(QWidget):
         self.processed_view.set_image(QImage())
         self.roi_label.setText("ROI: full frame")
         self.snapshot_button.setEnabled(False)
-        self.camera_readback.setText(
-            "Video playback loops continuously." if self.source_combo.currentData() == "video"
-            else "Camera requested/read-back values appear after start."
-        )
-        self.status.setText("Select a video and click Start video." if self.source_combo.currentData() == "video"
-                            else "Click Start camera for a live preview.")
+        self.camera_readback.setText({
+            "camera": "Camera requested/read-back values appear after start.",
+            "video": "Video playback loops continuously.",
+            "rtsp": "RTSP connection status appears after start.",
+        }[self.source_combo.currentData()])
+        self.status.setText({
+            "camera": "Click Start camera for a live preview.",
+            "video": "Select a video and click Start video.",
+            "rtsp": "Enter an RTSP URL and click Start stream.",
+        }[self.source_combo.currentData()])
         self._save_profile()
 
     def _browse_video(self) -> None:
@@ -742,7 +765,14 @@ class VisionPage(QWidget):
             return
         source_type = self.source_combo.currentData()
         video_path = None
-        if source_type == "video":
+        rtsp_url = None
+        if source_type == "rtsp":
+            try:
+                rtsp_url = validate_rtsp_url(self.rtsp_url.text())
+            except VisionError as error:
+                self.status.setText(str(error))
+                return
+        elif source_type == "video":
             try:
                 video_path = validate_video_path(Path(self.video_path.text().strip()))
             except VisionError as error:
@@ -760,13 +790,13 @@ class VisionPage(QWidget):
         self._active_source_type = source_type
         self._worker = VisionWorker(
             self.camera_index.value(), settings, self.buffer,
-            source_type=source_type, video_path=video_path,
+            source_type=source_type, video_path=video_path, rtsp_url=rtsp_url,
         )
         self._thread = QThread(self)
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
         self._worker.metadata_ready.connect(self._metadata_ready)
-        self._worker.status.connect(self.status.setText)
+        self._worker.status.connect(self._worker_status)
         self._worker.model_status.connect(self._model_status)
         self._worker.error.connect(self._worker_error)
         self._worker.finished.connect(self._thread.quit)
@@ -779,7 +809,10 @@ class VisionPage(QWidget):
         self.source_combo.setEnabled(False)
         self.video_path.setEnabled(False)
         self.browse_video_button.setEnabled(False)
-        if source_type == "video":
+        self.rtsp_url.setEnabled(False)
+        if source_type == "rtsp":
+            self.workspace.record_event("vision.rtsp.started", {})
+        elif source_type == "video":
             self.workspace.record_event("vision.video.started", {"path": str(video_path)})
         else:
             self.workspace.record_event("vision.camera.started", {"camera_index": self.camera_index.value()})
@@ -805,7 +838,10 @@ class VisionPage(QWidget):
     def _metadata_ready(self, metadata: dict[str, Any]) -> None:
         self._camera_metadata = dict(metadata)
         readback = metadata.get("readback_camera", {})
-        if metadata.get("source_type") == "video":
+        if metadata.get("source_type") == "rtsp":
+            self.camera_readback.setText("RTSP stream connected.")
+            self.status.setText("RTSP live. Draw an ROI or load a local model.")
+        elif metadata.get("source_type") == "video":
             fps = metadata.get("readback_fps", 0)
             fps_text = f"{fps:.1f} FPS" if isinstance(fps, (int, float)) and fps > 0 else "FPS unknown"
             self.camera_readback.setText(f"Looping video: {metadata.get('video_path')} | {fps_text}")
@@ -844,6 +880,18 @@ class VisionPage(QWidget):
         else:
             self.device_label.setText("Device: model unavailable")
             self.workspace.record_event("vision.model.load_failed", {"model": self.model_path.text(), "error": value}, outcome="failed")
+
+    @Slot(str)
+    def _worker_status(self, message: str) -> None:
+        self.status.setText(message)
+        if self._active_source_type == "rtsp" and (
+            "unavailable" in message or "interrupted" in message or message.startswith("Connecting")
+        ):
+            self.buffer.clear()
+            self._last_result = None
+            self.snapshot_button.setEnabled(False)
+            self.raw_view.set_image(QImage())
+            self.processed_view.set_image(QImage())
 
     @Slot(str)
     def _worker_error(self, message: str) -> None:
@@ -910,8 +958,8 @@ class VisionPage(QWidget):
         self._populate_detections(result)
 
     def _populate_detections(self, result: FrameResult) -> None:
-        if self._active_source_type == "video":
-            self.calibration_warning.setText("Camera calibration does not apply to video playback. Robot coordinates are not shown.")
+        if self._active_source_type in ("video", "rtsp"):
+            self.calibration_warning.setText("Camera calibration does not apply to this input. Robot coordinates are not shown.")
         else:
             geometry_warning = ""
             for detection in result.detections:
@@ -932,7 +980,7 @@ class VisionPage(QWidget):
                 self.calibration_warning.setText("Saved calibration matches the current full-frame geometry.")
         count = len(result.detections)
         if count:
-            source = "Video playing on repeat" if self._active_source_type == "video" else "Camera live"
+            source = {"camera": "Camera live", "video": "Video playing on repeat", "rtsp": "RTSP live"}[self._active_source_type]
             self.status.setText(f"{source}. {count} detection{'s' if count != 1 else ''} in the current frame.")
 
     def _load_calibration(self) -> None:
@@ -1009,5 +1057,5 @@ class VisionPage(QWidget):
         self._stop_source()
         if self._thread is not None:
             self._thread.quit()
-            self._thread.wait(3000)
+            self._thread.wait(7000)
         self._save_profile()
