@@ -609,7 +609,7 @@ class VisionWorker(QObject):
         rtsp_capture_factory: Callable[[str], Any] = _open_rtsp_capture,
     ) -> None:
         super().__init__()
-        if source_type not in ("camera", "video"):
+        if source_type not in ("camera", "video", "rtsp"):
             raise VisionError(f"Unsupported vision source: {source_type!r}")
         self.source_type = source_type
         self.video_path = video_path
