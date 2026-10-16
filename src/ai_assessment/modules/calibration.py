@@ -381,6 +381,9 @@ class CalibrationPage(QWidget):
             QLabel#calibrationWarning { background: #fff0ed; color: #9f2d20; border-radius: 8px; padding: 10px; }
             QLabel#calibrationResult { background: #087f75; color: white; border-radius: 10px; padding: 14px; font-size: 25px; font-weight: 800; }
             QLabel#calibrationMatrixNote { color: #61748c; font-size: 12px; }
+            QCheckBox#calibrationRobotToggle { background: #fff6e5; color: #795214; border: 1px solid #e7cf9d; border-radius: 8px; padding: 9px; font-weight: 750; }
+            QCheckBox#calibrationRobotToggle:checked { background: #dff6ea; color: #14675f; border-color: #8ac7ad; }
+            QCheckBox#calibrationRobotToggle::indicator { width: 19px; height: 19px; }
             QPushButton { background: #ffffff; color: #17304d; border: 1px solid #8fa5b5; border-radius: 5px; padding: 7px 13px; min-height: 32px; font-weight: 600; }
             QPushButton:hover { background: #e8f3f2; border-color: #087f75; }
             QPushButton#calibrationPrimary { background: #087f75; border-color: #087f75; color: white; font-weight: 800; }
@@ -460,6 +463,31 @@ class CalibrationPage(QWidget):
         hint.setObjectName("calibrationHint")
         hint.setWordWrap(True)
         layout.addWidget(hint)
+
+        robot_heading = QLabel("Optional robot test move")
+        robot_heading.setObjectName("calibrationSection")
+        layout.addWidget(robot_heading)
+        self.send_robot_on_click = QCheckBox("Enable robot movement on test clicks (Z = 100)")
+        self.send_robot_on_click.setChecked(False)
+        self.send_robot_on_click.setObjectName("calibrationRobotToggle")
+        self.send_robot_on_click.setToolTip(
+            "After calculating a matrix, click the frozen image to send one move to the robot."
+        )
+        layout.addWidget(self.send_robot_on_click)
+        robot_url_row = QHBoxLayout()
+        robot_url_row.addWidget(QLabel("Robot URL"))
+        self.robot_url = QLineEdit()
+        self.robot_url.setPlaceholderText("http://192.168.1.10:8080")
+        self.robot_url.setToolTip("Base URL or full /command URL. The address stays in this session only.")
+        robot_url_row.addWidget(self.robot_url, 1)
+        layout.addLayout(robot_url_row)
+        robot_note = QLabel(
+            "Off by default. With a valid matrix, clicking a frozen image sends POST /command "
+            "with the displayed X/Y, Z = 100 and duration = 2000 ms."
+        )
+        robot_note.setObjectName("calibrationMatrixNote")
+        robot_note.setWordWrap(True)
+        layout.addWidget(robot_note)
 
         table = QGridLayout()
         table.setHorizontalSpacing(6)
@@ -544,27 +572,6 @@ class CalibrationPage(QWidget):
         load_button.clicked.connect(self._load_calibration)
         actions.addWidget(load_button)
         layout.addLayout(actions)
-
-        robot_heading = QLabel("03  Optional robot test move")
-        robot_heading.setObjectName("calibrationSection")
-        layout.addWidget(robot_heading)
-        robot_url_row = QHBoxLayout()
-        robot_url_row.addWidget(QLabel("Robot URL"))
-        self.robot_url = QLineEdit()
-        self.robot_url.setPlaceholderText("http://192.168.1.10:8080")
-        self.robot_url.setToolTip("Base URL or full /command URL. The address stays in this session only.")
-        robot_url_row.addWidget(self.robot_url, 1)
-        layout.addLayout(robot_url_row)
-        self.send_robot_on_click = QCheckBox("Send move on test click (Z = 100, duration = 2000 ms)")
-        self.send_robot_on_click.setChecked(False)
-        layout.addWidget(self.send_robot_on_click)
-        robot_note = QLabel(
-            "When enabled, a click with a valid matrix sends POST /command with the displayed X/Y. "
-            "Only test points on the calibrated work plane. Clicks while a command is in progress do not queue another move."
-        )
-        robot_note.setObjectName("calibrationMatrixNote")
-        robot_note.setWordWrap(True)
-        layout.addWidget(robot_note)
 
         self.geometry_warning = QLabel()
         self.geometry_warning.setObjectName("calibrationWarning")
