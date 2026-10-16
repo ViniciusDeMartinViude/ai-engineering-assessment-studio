@@ -7,13 +7,11 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from PySide6.QtCore import QPoint, QRectF, Qt, QBuffer, QIODevice, QObject, QThread, Signal, Slot
-from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen
+from PySide6.QtCore import QPoint, QRectF, Qt, QBuffer, QIODevice, QObject, QThread, Signal, Slot, QLocale
+from PySide6.QtGui import QColor, QDoubleValidator, QFont, QImage, QPainter, QPen
 from PySide6.QtWidgets import (
-    QAbstractSpinBox,
     QButtonGroup,
     QCheckBox,
-    QDoubleSpinBox,
     QFileDialog,
     QFrame,
     QGridLayout,
@@ -240,14 +238,17 @@ class CalibrationImageView(QWidget):
             painter.drawLine(int(center_x), int(center_y - 12), int(center_x), int(center_y + 12))
 
 
-def _numeric_box() -> QDoubleSpinBox:
-    box = QDoubleSpinBox()
-    box.setRange(-1_000_000_000, 1_000_000_000)
-    box.setDecimals(1)
-    box.setSingleStep(0.1)
-    box.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+def _numeric_box() -> QLineEdit:
+    box = QLineEdit("0.0")
+    validator = QDoubleValidator(-1_000_000_000, 1_000_000_000, 6, box)
+    validator.setNotation(QDoubleValidator.Notation.StandardNotation)
+    numeric_locale = QLocale.c()
+    numeric_locale.setNumberOptions(QLocale.NumberOption.RejectGroupSeparator)
+    validator.setLocale(numeric_locale)
+    box.setValidator(validator)
     box.setAlignment(Qt.AlignmentFlag.AlignRight)
     box.setMinimumWidth(96)
+    box.setToolTip("Robot coordinate. Type a number, using a period for decimals.")
     return box
 
 
@@ -386,7 +387,7 @@ class CalibrationPage(QWidget):
             QPushButton#pointButton:checked { background: #ddf6f1; border: 2px solid #0b9d91; color: #086c63; font-weight: 800; }
             QRadioButton { background: #ffffff; color: #17304d; border: 1px solid #8fa5b5; border-radius: 5px; padding: 7px 13px; min-height: 32px; }
             QRadioButton:checked { background: #ddf6f1; border: 2px solid #0b9d91; color: #086c63; }
-            QDoubleSpinBox, QSpinBox, QLineEdit { background: #ffffff; color: #17304d; border: 1px solid #cbd9e6; border-radius: 7px; padding: 5px 8px; min-height: 27px; }
+            QSpinBox, QLineEdit { background: #ffffff; color: #17304d; border: 1px solid #cbd9e6; border-radius: 7px; padding: 5px 8px; min-height: 27px; }
             QPlainTextEdit#calibrationMatrix { background: #f2f6fb; color: #17304d; border: 1px solid #d4e2ed; border-radius: 8px; padding: 9px; }
             """
         )
@@ -469,7 +470,7 @@ class CalibrationPage(QWidget):
             table.addWidget(field, 0, column)
         self._point_buttons: list[QPushButton] = []
         self._pixel_labels: list[tuple[QLabel, QLabel]] = []
-        self._robot_fields: list[tuple[QDoubleSpinBox, QDoubleSpinBox]] = []
+        self._robot_fields: list[tuple[QLineEdit, QLineEdit]] = []
         for row in range(4):
             button = QPushButton(f"{row + 1:02d}")
             button.setObjectName("pointButton")
@@ -481,8 +482,8 @@ class CalibrationPage(QWidget):
             v_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
             self._pixel_labels.append((u_label, v_label))
             x_box, y_box = _numeric_box(), _numeric_box()
-            x_box.valueChanged.connect(self._invalidate_fit)
-            y_box.valueChanged.connect(self._invalidate_fit)
+            x_box.textChanged.connect(self._invalidate_fit)
+            y_box.textChanged.connect(self._invalidate_fit)
             self._robot_fields.append((x_box, y_box))
             for column, widget in enumerate((button, u_label, v_label, x_box, y_box)):
                 table.addWidget(widget, row + 1, column)
@@ -850,7 +851,7 @@ class CalibrationPage(QWidget):
             v_label.setText("--")
             for field in self._robot_fields[row]:
                 field.blockSignals(True)
-                field.setValue(0.0)
+                field.setText("0.0")
                 field.blockSignals(False)
         self.matrix_text.clear()
         self.test_result.setText("ROBOT X: --     Y: --")
@@ -868,9 +869,10 @@ class CalibrationPage(QWidget):
         if any(point is None for point in self._points):
             self._set_status("Select all four image points first.")
             return
-        robot_points = [
-            (x.value(), y.value()) for x, y in self._robot_fields
-        ]
+        if any(not field.hasAcceptableInput() for pair in self._robot_fields for field in pair):
+            self._set_status("Enter a valid number for every robot X/Y coordinate.")
+            return
+        robot_points = [(float(x.text()), float(y.text())) for x, y in self._robot_fields]
         transform: TransformType = (
             "homography" if self.homography_choice.isChecked() else "affine"
         )
@@ -963,7 +965,7 @@ class CalibrationPage(QWidget):
             self._pixel_labels[row][1].setText(str(round(v)))
             for field, value in zip(self._robot_fields[row], (x, y)):
                 field.blockSignals(True)
-                field.setValue(float(value))
+                field.setText(f"{value:.6f}".rstrip("0").rstrip(".") or "0")
                 field.blockSignals(False)
         self.matrix_text.setPlainText(_format_matrix(record.matrix))
         if restored_snapshot:
