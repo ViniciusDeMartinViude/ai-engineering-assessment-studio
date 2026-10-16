@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import binascii
+from math import hypot
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -902,7 +903,18 @@ class CalibrationPage(QWidget):
             button.setChecked(False)
         self.save_button.setEnabled(True)
         self._update_geometry_warning()
-        self._set_status("Matrix ready. Click the image to test a robot X/Y prediction.")
+        point_errors = []
+        for (u, v), (x, y) in zip(
+            self._record.camera_points_uv, self._record.robot_points_xy
+        ):
+            fitted_x, fitted_y = CalibrationService.apply(
+                self._record, (u, v), self._record.image_size
+            )
+            point_errors.append(hypot(fitted_x - x, fitted_y - y))
+        self._set_status(
+            f"Matrix ready. Maximum point fit error: {max(point_errors):.2f} "
+            "robot units. Click the image to test a robot X/Y prediction."
+        )
 
     def _snapshot_png(self) -> bytes | None:
         if self._current_image.isNull():
