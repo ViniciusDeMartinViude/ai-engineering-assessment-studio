@@ -197,8 +197,8 @@ class CalibrationServiceTests(unittest.TestCase):
                 for index, (u, v) in enumerate(((10, 10), (70, 10), (70, 60), (10, 60))):
                     page._select_row(index)
                     page._image_clicked(u, v)
-                    page._robot_fields[index][0].setValue(u + 5)
-                    page._robot_fields[index][1].setValue(v + 7)
+                    page._robot_fields[index][0].setText(str(u + 5))
+                    page._robot_fields[index][1].setText(str(v + 7))
                 page._calculate()
                 record = page._record
                 points = page._points[:]
@@ -227,6 +227,32 @@ class CalibrationServiceTests(unittest.TestCase):
                 self.assertIsNone(page._record)
                 self.assertEqual(page._points, [None] * 4)
                 self.assertEqual(page.matrix_text.toPlainText(), "")
+            finally:
+                page.shutdown()
+
+    def test_robot_coordinates_are_visible_editable_numeric_text(self) -> None:
+        from PySide6.QtTest import QTest
+        from PySide6.QtWidgets import QApplication
+
+        from ai_assessment.modules.calibration import CalibrationPage
+
+        app = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = CandidateWorkspace.create(Path(directory) / "C014", candidate_id="C014")
+            page = CalibrationPage(workspace)
+            try:
+                field = page._robot_fields[0][0]
+                self.assertEqual(field.text(), "0.0")
+                self.assertTrue(field.isEnabled())
+                self.assertFalse(field.isReadOnly())
+                field.selectAll()
+                QTest.keyClicks(field, "-195.5")
+                self.assertEqual(field.text(), "-195.5")
+                field.selectAll()
+                QTest.keyClicks(field, "38")
+                self.assertEqual(field.text(), "38")
+                page._clear_points()
+                self.assertEqual(field.text(), "0.0")
             finally:
                 page.shutdown()
 
