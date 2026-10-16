@@ -48,6 +48,22 @@ class CalibrationServiceTests(unittest.TestCase):
             atol=1e-10,
         )
 
+    def test_affine_accepts_small_point_selection_error(self) -> None:
+        camera = ((154, 250), (154, 105), (418, 251), (417, 105))
+        robot = ((6, -256), (66, -256), (6, -146), (66, -146))
+
+        matrix = fit_affine(camera, robot)
+        errors = [
+            np.linalg.norm(np.asarray(transform_point(matrix, *uv)) - xy)
+            for uv, xy in zip(camera, robot)
+        ]
+        self.assertGreater(max(errors), 0.1)
+        self.assertLess(max(errors), 0.2)
+
+        inconsistent_robot = (*robot[:3], (200, -146))
+        with self.assertRaisesRegex(CalibrationError, "Affine point fit error"):
+            fit_affine(camera, inconsistent_robot)
+
     def test_known_homography_mapping(self) -> None:
         expected = np.array(
             [[1.2, 0.1, 4.0], [0.05, 0.9, -2.0], [0.0005, -0.0008, 1.0]]
