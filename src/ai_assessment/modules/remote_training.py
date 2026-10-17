@@ -68,10 +68,10 @@ class RemoteTrainingPanel(QWidget):
         if self.busy: return
         self.busy=True
         task=Action(fn)
+        task.signals.result.connect(self._finish)
+        task.signals.error.connect(self._finish)
         task.signals.result.connect(callback)
         task.signals.error.connect(lambda err: self.status.setText("Error: "+err))
-        task.signals.error.connect(self._finish)
-        task.signals.result.connect(self._finish)
         self.pool.start(task)
 
     def _finish(self, *_):
