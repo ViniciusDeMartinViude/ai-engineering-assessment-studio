@@ -45,13 +45,9 @@ class RemoteTrainingPanel(QWidget):
         self.imgsz = QComboBox(); self.imgsz.addItems(["512", "640"])
         self.batch = QSpinBox(); self.batch.setRange(1, 8); self.batch.setValue(4)
         self.subset = QComboBox()
-        self.subset.addItem("Select exported Dataset Studio subset", None)
-        for candidate in sorted(workspace.resolve_inside("dataset").glob("subset-*")):
-            try:
-                validate_subset(workspace, candidate)
-                self.subset.addItem(candidate.name, str(candidate))
-            except Exception:
-                pass
+        self.refresh_subsets()
+        self.refresh_subset_button = QPushButton("Refresh subsets")
+        self.refresh_subset_button.clicked.connect(self.refresh_subsets)
         self.upload_button = QPushButton("Upload selected subset")
         self.upload_button.clicked.connect(self.upload)
         layout = QVBoxLayout(self)
@@ -62,6 +58,7 @@ class RemoteTrainingPanel(QWidget):
             line=QHBoxLayout(); line.addWidget(QLabel(caption)); line.addWidget(widget, 1); layout.addLayout(line)
         selection = QHBoxLayout()
         selection.addWidget(self.subset, 1)
+        selection.addWidget(self.refresh_subset_button)
         selection.addWidget(self.upload_button)
         layout.addLayout(selection)
         buttons=QHBoxLayout()
@@ -74,6 +71,35 @@ class RemoteTrainingPanel(QWidget):
         self.table.setHorizontalHeaderLabels(["Job ID", "Status", "GPU node", "Model"])
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         layout.addWidget(self.table)
+
+    def refresh_subsets(self):
+        """Re-read M3 exports; retain selection if it still exists."""
+        previous = self.subset.currentData()
+        self.subset.blockSignals(True)
+        try:
+            self.subset.clear()
+            self.subset.addItem("Select exported Dataset Studio subset", None)
+            for candidate in sorted(
+                self.workspace.resolve_inside("dataset").glob("subset-*"),
+                key=lambda path: path.stat().st_mtime,
+                reverse=True,
+            ):
+                try:
+                    validated = validate_subset(self.workspace, candidate)
+                except Exception:
+                    continue
+                self.subset.addItem(
+                    f"{candidate.name} | {', '.join(validated.class_names)}",
+                    str(candidate),
+                )
+            selected = self.subset.findData(previous) if previous else -1
+            self.subset.setCurrentIndex(selected if selected >= 0 else (1 if self.subset.count() > 1 else 0))
+        finally:
+            self.subset.blockSignals(False)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.refresh_subsets()
 
     def client(self):
         return RemoteClusterClient(self.url.text().strip(),self.token.text().strip(),
@@ -93,6 +119,7 @@ class RemoteTrainingPanel(QWidget):
         self.busy=False
 
     def upload(self):
+        self.refresh_subsets()
         path = self.subset.currentData()
         if not path:
             self.status.setText("Choose an exported Dataset Studio subset")
