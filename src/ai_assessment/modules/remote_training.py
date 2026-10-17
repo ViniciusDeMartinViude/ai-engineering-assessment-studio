@@ -2,7 +2,8 @@
 from __future__ import annotations
 import os
 from pathlib import Path
-from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Signal, Slot
+from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Signal, Slot, QUrl
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QTableWidget, QTableWidgetItem, QSpinBox, QComboBox, QMessageBox
@@ -32,6 +33,8 @@ class RemoteTrainingPanel(QWidget):
         self.workspace = workspace
         self.pool = QThreadPool.globalInstance()
         self.busy = False
+        self._download_path = None
+        self._jobs_by_id = {}
         self.status_timer = QTimer(self)
         self.status_timer.setInterval(5000)
         self.status_timer.timeout.connect(self._auto_refresh)
@@ -70,15 +73,31 @@ class RemoteTrainingPanel(QWidget):
         selection.addWidget(self.upload_button)
         layout.addLayout(selection)
         buttons=QHBoxLayout()
-        for caption, fn in (("Submit remote job",self.submit),("Refresh",self.refresh),
-                            ("Cancel selected",self.cancel),("Download selected result",self.download)):
-            button=QPushButton(caption);button.clicked.connect(fn);buttons.addWidget(button)
+        for caption, fn in (("Submit remote job", self.submit), ("Refresh jobs", self.refresh),
+                            ("Cancel selected", self.cancel)):
+            button=QPushButton(caption)
+            button.clicked.connect(fn)
+            buttons.addWidget(button)
         layout.addLayout(buttons)
+        results_row = QHBoxLayout()
+        self.download_button = QPushButton("Download results ZIP")
+        self.download_button.setEnabled(False)
+        self.download_button.clicked.connect(self.download)
+        self.open_folder_button = QPushButton("Open results folder")
+        self.open_folder_button.clicked.connect(self.open_results_folder)
+        results_row.addWidget(self.download_button)
+        results_row.addWidget(self.open_folder_button)
+        results_row.addStretch()
+        layout.addLayout(results_row)
+        self.download_hint = QLabel("Select a completed job with an artifact to download its results.")
+        self.download_hint.setWordWrap(True)
+        layout.addWidget(self.download_hint)
         self.status=QLabel("Ready");layout.addWidget(self.status)
-        self.table=QTableWidget(0, 4)
-        self.table.setHorizontalHeaderLabels(["Job ID", "Status", "GPU node", "Model"])
+        self.table=QTableWidget(0, 5)
+        self.table.setHorizontalHeaderLabels(["Job ID", "Status", "GPU node", "Model", "Results"])
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         layout.addWidget(self.table)
+        self.table.itemSelectionChanged.connect(self.update_download_state)
 
     def normalize_image_size(self):
         """Round to nearest 32; half-way cases round upward."""
@@ -186,6 +205,8 @@ class RemoteTrainingPanel(QWidget):
             self.model.setEnabled(True)
 
     def display(self, jobs):
+        previous_selected = self.selected_id()
+        self._jobs_by_id = {str(job.get("id")): job for job in jobs if job.get("id")}
         previous = self.source_run.currentData()
         selected_id = previous.get("id") if isinstance(previous, dict) else None
         self.source_run.blockSignals(True)
@@ -208,10 +229,19 @@ class RemoteTrainingPanel(QWidget):
             self.source_run.blockSignals(False)
         self._source_changed()
         self.table.setRowCount(0)
+        selected_row = -1
         for job in jobs:
             row=self.table.rowCount();self.table.insertRow(row)
             for col,key in enumerate(("id","status","node","model")):
                 self.table.setItem(row,col,QTableWidgetItem(str(job.get(key) or "")))
+            ready = job.get("status") == "completed" and bool(job.get("artifact"))
+            result_text = "Available" if ready else ("Not ready" if job.get("status") in ("queued", "running") else "Unavailable")
+            self.table.setItem(row,4,QTableWidgetItem(result_text))
+            if str(job.get("id")) == previous_selected:
+                selected_row = row
+        if selected_row >= 0:
+            self.table.selectRow(selected_row)
+        self.update_download_state()
         self.status.setText(f"{len(jobs)} remote jobs")
 
     def selected_id(self):
@@ -224,10 +254,50 @@ class RemoteTrainingPanel(QWidget):
             client=self.client()
             self.run_action(lambda:client.cancel(job),lambda _:(self.status.setText("Cancellation requested"),self.refresh()))
 
+    def update_download_state(self):
+        job_id = self.selected_id()
+        job = self._jobs_by_id.get(job_id) if job_id else None
+        available = bool(job and job.get("status") == "completed" and job.get("artifact"))
+        self.download_button.setEnabled(available and not self.busy)
+        if not job:
+            self.download_hint.setText("Select a completed job with an artifact to download its results.")
+        elif available:
+            self.download_hint.setText(
+                f"Results available for {job_id[:12]}... Click Download results ZIP. "
+                "The archive contains the files provided by the cluster; download does not automatically import them into Results Studio."
+            )
+        else:
+            self.download_hint.setText(
+                f"Selected job: {job.get('status', 'unknown')}. "
+                "Results can be downloaded after the cluster has completed the job and uploaded its artifact."
+            )
+
+    def open_results_folder(self):
+        folder = self.workspace.resolve_inside("exports", "remote_training")
+        folder.mkdir(parents=True, exist_ok=True)
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder))):
+            self.status.setText("Could not open folder: " + str(folder))
+
     def download(self):
-        job=self.selected_id()
-        if job:
-            client=self.client()
-            target=self.workspace.resolve_inside("exports","remote_training",job+".zip")
-            self.run_action(lambda:client.download(job,target),
-                            lambda path:self.status.setText("Saved result ZIP: "+str(path)))
+        job = self.selected_id()
+        record = self._jobs_by_id.get(job) if job else None
+        if not record or record.get("status") != "completed" or not record.get("artifact"):
+            self.update_download_state()
+            return
+        try:
+            client = self.client()
+        except Exception as exc:
+            self.status.setText("Download unavailable: " + str(exc))
+            return
+        target = self.workspace.resolve_inside("exports", "remote_training", job + ".zip")
+        self.status.setText("Downloading results for " + job[:12] + "...")
+        self.download_button.setEnabled(False)
+        self.run_action(lambda: client.download(job, target), self.download_finished)
+
+    def download_finished(self, path):
+        self._download_path = Path(path)
+        self.status.setText("Results downloaded: " + str(path))
+        self.download_hint.setText(
+            "Saved results ZIP: " + str(path) + ". Click Open results folder to locate the archive."
+        )
+        self.update_download_state()
