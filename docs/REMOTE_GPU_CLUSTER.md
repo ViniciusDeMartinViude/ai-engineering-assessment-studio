@@ -1,29 +1,21 @@
-# Remote GPU training integration (pilot)
+# Direct remote GPU training (trusted-operator pilot)
 
-This branch adds a **Remote GPU Cluster** panel to Training, retaining local M6 training unchanged.
+Assessment Studio Training includes **Remote GPU Cluster** controls and retains local M6 training.
 
-## Architecture
-Candidate desktop -> organizer gateway -> GPU management API -> worker nodes.
+## Connect
+Run the Studio from branch `feature/remote-gpu-cluster-training`. Enter the manager's LAN URL (for example `http://192.168.1.100:8000`) and the existing management API key. Select the pre-staged dataset ID `dates-v16`, model, epochs, image size and batch. Submit, Refresh, and Download selected result.
 
-**Never put the management API_KEY or WORKER_KEY on student PCs.** The gateway validates a separate per-candidate bearer token and stamps student_id from its own token registry. Configure HTTPS, firewall controls and individual tokens before connecting untrusted candidate workstations.
+The desktop calls the v0.8 management API directly:
+- POST /jobs (student_id from active workspace, mode=train, dataset/model/epochs/imgsz/batch)
+- GET /jobs
+- GET /jobs/{id}
+- POST /jobs/{id}/cancel
+- GET /jobs/{id}/artifact
 
-## Setup
-Deploy the gateway app from `integrations/gpu_gateway.py` on the management PC (or as another organizer-managed service that can reach the management API at localhost). It needs `fastapi uvicorn requests` plus:
-- `CLUSTER_MANAGER_URL=http://127.0.0.1:8000`
-- `CLUSTER_API_KEY` from the management host's private .env
-- `GATEWAY_TOKENS_FILE` an organizer-only JSON file mapping token -> candidate ID (C###).
-- `GATEWAY_DATASETS=dates-v16` comma-separated, pre-staged dataset IDs.
+Downloaded ZIP files land under `candidate_workspaces/C###/exports/remote_training/`.
 
-Example: `uvicorn integrations.gpu_gateway:app --host 127.0.0.1 --port 8443`.
-Use an authenticated TLS reverse proxy to make the gateway available over the LAN; do not bind an unauthenticated gateway publicly.
+## Security
+**For organizer-operated trusted workstations only.** The existing manager key is administrator-grade and gives extensive access to the entire cluster. Displaying only the current candidate's jobs is UI filtering, **not authorization**. Do not distribute the key to competitors, bake it into an installer, store it in the workspace, or expose the manager to an untrusted LAN. Prefer a private management network and HTTPS/VPN. Before student deployment, implement scoped keys directly in manager API (or a centralized trust boundary).
 
-In Assessment Studio's Training page, enter the gateway URL, student-issued token, dataset ID, model and training parameters. Submit, refresh, cancel, download ZIP. Network calls are asynchronous.
-
-**Pilot limitation:** This uses a dataset already staged by organizers on the GPU manager. It does not upload each student's M3 four-class subset, does not convert remote artifacts to native M6 Results records, and does not expose candidate-independent cluster controls. Before competition release, implement trusted candidate authentication, subset upload with hash verification, results import and progress polling.
-
-## Quick tests
-1. Start with an organizer test candidate token and pre-staged dataset.
-2. Submit a short job through the Studio, confirm that manager job has the correct student ID.
-3. Refresh until completed, download the artifact ZIP into the candidate workspace.
-4. Confirm that a different candidate token cannot read or cancel that job.
-5. Confirm local Training still works.
+## Known limits
+The direct client references a dataset already staged on the GPU manager; it does not transmit selected M3 subsets. Downloaded artifacts are not automatically registered with Results/Vision. Validate exact API paths and responses against your deployed v0.8 manager; no physical cluster E2E verification has yet occurred.
