@@ -297,7 +297,7 @@ class RemoteTrainingPanel(QWidget):
     def download_finished(self, path):
         self._download_path = Path(path)
         self.status.setText("Results downloaded: " + str(path))
+        self.update_download_state()
         self.download_hint.setText(
             "Saved results ZIP: " + str(path) + ". Click Open results folder to locate the archive."
         )
-        self.update_download_state()
