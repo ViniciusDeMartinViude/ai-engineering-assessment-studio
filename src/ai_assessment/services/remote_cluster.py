@@ -27,7 +27,7 @@ class RemoteClusterClient:
     def request(self, method: str, path: str, **kwargs):
         try:
             resp = requests.request(method, self.url + path,
-                headers={"x-api-key": self.key}, timeout=(5, 60), **kwargs)
+                headers={"x-api-key": self.key}, timeout=kwargs.pop("timeout", (5, 60)), **kwargs)
             resp.raise_for_status()
             return resp
         except requests.RequestException as exc:
