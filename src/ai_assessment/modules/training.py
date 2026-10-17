@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..modules.remote_training import RemoteTrainingPanel
 from ..core.workspace import CandidateWorkspace
 from ..services.training import (
     TrainingConfig,
@@ -139,6 +140,10 @@ class TrainingPage(QWidget):
         form.addRow("Device", self.device)
         form.addRow("Mixed precision", self.amp)
         root.addWidget(config)
+        remote_section = QGroupBox("Remote GPU Cluster (organizer pilot)")
+        remote_layout = QVBoxLayout(remote_section)
+        remote_layout.addWidget(RemoteTrainingPanel(self.workspace))
+        root.addWidget(remote_section)
 
         actions = QHBoxLayout()
         self.start_button = QPushButton("Start training")
