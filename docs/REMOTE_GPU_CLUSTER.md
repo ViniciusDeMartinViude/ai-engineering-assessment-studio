@@ -20,9 +20,15 @@ Downloaded ZIP files land under `candidate_workspaces/C###/exports/remote_traini
 ## Known limits
 The direct client references a dataset already staged on the GPU manager; it does not transmit selected M3 subsets. Downloaded artifacts are not automatically registered with Results/Vision. Validate exact API paths and responses against your deployed v0.8 manager; no physical cluster E2E verification has yet occurred.
 
-## Dataset upload extension (in progress)
-Training now lists valid M3 `dataset/subset-*` exports and offers **Upload selected subset**. The Studio packages the complete export (including `manifest.json`, `data.yaml`, train/val/test) as ZIP, computes SHA-256 and posts multipart `POST /datasets/upload` with `student_id`, `sha256`, `file`. The manager responds with `dataset_id`, which the UI fills into the dataset field for a subsequent training submission.
 
-The implementation example is `integrations/cluster_dataset_upload_router.py`. **This is not automatically active**. The deployed cluster's `manager/app.py` must mount the route, register the uploaded dataset ID, and make its content available through the existing worker dataset download contract. No cluster source is present in this repository, so this wiring remains outstanding. Do not submit uploaded-dataset jobs until that integration is complete. Install `python-multipart` where this route is mounted.
+## Upload support with real GPU manager v0.8 app.py
 
-Only trusted organizer workstations may use the direct cluster admin credential. The implementation still needs a real dataset/worker roundtrip test; archive extraction and M3 manifest content should be verified in the manager's deployment context before production use.
+The Studio chooses an exported four-class subset, packages it into a ZIP, computes SHA-256, and uploads using `POST /datasets/upload` with multipart fields `file`, `student_id`, and `sha256`. The returned `dataset_id` becomes the job's dataset ID.
+
+**Deployment:** The manager-side implementation is supplied separately as `app.py` in the tested upgrade ZIP. Replace `manager/app.py` on the management host after backing it up, then rebuild/restart the manager container. The added endpoint saves an immutable, content-addressed subset directory into the *existing* `DATASETS_DIR`; the existing `GET /internal/dataset/{name}` route then distributes it to whichever GPU worker claims training.
+
+A successful POST should return `{"dataset_id":"subset-c014-...","sha256":"...","reused":false}`. Do not deploy the earlier prototype `cluster_dataset_upload_router.py`, which has been removed.
+
+**Configuration:** `MAX_DATASET_UPLOAD_MB` defaults to 1000 and `MAX_DATASET_UNPACKED_MB` to 3000. Persist and share the existing `DATASETS_DIR` manager Docker volume across rebuilds. FastAPI multipart handling requires `python-multipart`, already needed by your worker artifact upload route.
+
+**Test:** Use the Studio's Upload selected subset button, then Start remote training. Confirm dataset directory under `DATASETS_DIR` and worker training can load the uploaded `data.yaml`. Keep direct administrator access restricted to trusted organizer machines.
