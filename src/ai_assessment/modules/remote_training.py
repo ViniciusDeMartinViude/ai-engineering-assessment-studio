@@ -45,8 +45,8 @@ class RemoteTrainingPanel(QWidget):
         self.model = QComboBox()
         self.model.addItems(["yolo26n.pt", "yolo26s.pt"])
         self.epochs = QSpinBox(); self.epochs.setRange(1, 200); self.epochs.setValue(5)
-        self.imgsz = QSpinBox(); self.imgsz.setRange(320, 640); self.imgsz.setSingleStep(32); self.imgsz.setValue(512)
-        self.imgsz.setToolTip("Enter any size from 320 to 640. It rounds to the nearest multiple of 32 after editing.")
+        self.imgsz = QSpinBox(); self.imgsz.setRange(160, 640); self.imgsz.setSingleStep(32); self.imgsz.setValue(512)
+        self.imgsz.setToolTip("Enter any size from 160 to 640. It rounds to the nearest multiple of 32 after editing.")
         self.imgsz.editingFinished.connect(self.normalize_image_size)
         self.batch = QSpinBox(); self.batch.setRange(1, 8); self.batch.setValue(4)
         self.subset = QComboBox()
@@ -80,7 +80,7 @@ class RemoteTrainingPanel(QWidget):
     def normalize_image_size(self):
         """Round to nearest 32; half-way cases round upward."""
         number = self.imgsz.value()
-        normalized = max(320, min(640, ((number + 16) // 32) * 32))
+        normalized = max(160, min(640, ((number + 16) // 32) * 32))
         if number != normalized:
             self.imgsz.setValue(normalized)
 
