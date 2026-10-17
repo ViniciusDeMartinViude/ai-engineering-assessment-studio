@@ -31,11 +31,11 @@ class RemoteTrainingPanel(QWidget):
         self.workspace = workspace
         self.pool = QThreadPool.globalInstance()
         self.busy = False
-        self.url = QLineEdit(os.getenv("AI_GPU_GATEWAY_URL", ""))
-        self.url.setPlaceholderText("https://management-host:8443")
+        self.url = QLineEdit(os.getenv("AI_GPU_MANAGER_URL", ""))
+        self.url.setPlaceholderText("http://MANAGER-LAN-IP:8000")
         self.token = QLineEdit()
         self.token.setEchoMode(QLineEdit.EchoMode.Password)
-        self.token.setPlaceholderText("Candidate gateway token (not cluster administrator key)")
+        self.token.setPlaceholderText("Cluster API key (trusted operator only)")
         self.dataset = QLineEdit(os.getenv("AI_GPU_DATASET", "dates-v16"))
         self.dataset.setToolTip("Pre-staged organizer dataset ID. Local M3 subsets are NOT uploaded in this pilot.")
         self.model = QComboBox()
@@ -44,9 +44,9 @@ class RemoteTrainingPanel(QWidget):
         self.imgsz = QComboBox(); self.imgsz.addItems(["512", "640"])
         self.batch = QSpinBox(); self.batch.setRange(1, 8); self.batch.setValue(4)
         layout = QVBoxLayout(self)
-        note = QLabel("Remote GPU Cluster (pilot): uses organizer-published datasets; does not upload the selected local subset.")
+        note = QLabel("Direct GPU cluster training (trusted operator pilot). The dataset must already exist on the cluster; local M3 subsets are not uploaded.")
         note.setWordWrap(True); layout.addWidget(note)
-        for caption, widget in (("Gateway URL",self.url),("Candidate token",self.token),("Dataset ID",self.dataset),
+        for caption, widget in (("Manager URL",self.url),("Cluster API key",self.token),("Dataset ID",self.dataset),
                                 ("Model",self.model),("Epochs",self.epochs),("Image size",self.imgsz),("Batch",self.batch)):
             line=QHBoxLayout(); line.addWidget(QLabel(caption)); line.addWidget(widget, 1); layout.addLayout(line)
         buttons=QHBoxLayout()
@@ -81,7 +81,7 @@ class RemoteTrainingPanel(QWidget):
         client=self.client()
         args=(self.model.currentText(),self.dataset.text().strip(),
               self.epochs.value(),int(self.imgsz.currentText()),self.batch.value())
-        self.run_action(lambda:client.submit(*args),lambda job:(self.status.setText("Queued: "+job["id"]),self.refresh()))
+        self.run_action(lambda:client.submit(*args),lambda job:(self.status.setText("Submitted: "+str(job.get("id", job.get("job_id", "?")))),self.refresh()))
 
     def refresh(self):
         client=self.client()
