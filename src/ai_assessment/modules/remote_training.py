@@ -1,6 +1,7 @@
 """Remote cluster controls. All network calls run off the Qt GUI thread."""
 from __future__ import annotations
 import os
+from datetime import datetime
 from pathlib import Path
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Signal, Slot, QUrl
 from PySide6.QtGui import QDesktopServices
@@ -93,11 +94,13 @@ class RemoteTrainingPanel(QWidget):
         self.download_hint.setWordWrap(True)
         layout.addWidget(self.download_hint)
         self.status=QLabel("Ready");layout.addWidget(self.status)
-        self.table=QTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels(["Job ID", "Status", "GPU node", "Model", "Results"])
+        self.table=QTableWidget(0, 7)
+        self.table.setHorizontalHeaderLabels(["Job ID", "Status", "GPU node", "Model", "Start", "End", "Download"])
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         layout.addWidget(self.table)
         self.table.itemSelectionChanged.connect(self.update_download_state)
+        self.table.setColumnWidth(6, 86)
+        self.table.setToolTip("Start shows submission time on cluster v0.8; End shows terminal update time.")
 
     def normalize_image_size(self):
         """Round to nearest 32; half-way cases round upward."""
@@ -204,6 +207,15 @@ class RemoteTrainingPanel(QWidget):
         else:
             self.model.setEnabled(True)
 
+    @staticmethod
+    def format_job_time(value):
+        if value is None:
+            return "—"
+        try:
+            return datetime.fromtimestamp(float(value)).strftime("%d/%m %H:%M")
+        except (ValueError, TypeError, OverflowError, OSError):
+            return "—"
+
     def display(self, jobs):
         previous_selected = self.selected_id()
         self._jobs_by_id = {str(job.get("id")): job for job in jobs if job.get("id")}
@@ -235,8 +247,18 @@ class RemoteTrainingPanel(QWidget):
             for col,key in enumerate(("id","status","node","model")):
                 self.table.setItem(row,col,QTableWidgetItem(str(job.get(key) or "")))
             ready = job.get("status") == "completed" and bool(job.get("artifact"))
-            result_text = "Available" if ready else ("Not ready" if job.get("status") in ("queued", "running") else "Unavailable")
-            self.table.setItem(row,4,QTableWidgetItem(result_text))
+            # v0.8 uses created_at (submission); future API may return started_at.
+            start_time = job.get("started_at") or job.get("created_at")
+            terminal = job.get("status") in ("completed", "failed", "cancelled")
+            end_time = (job.get("finished_at") or job.get("updated_at")) if terminal else None
+            self.table.setItem(row, 4, QTableWidgetItem(self.format_job_time(start_time)))
+            self.table.setItem(row, 5, QTableWidgetItem(self.format_job_time(end_time)))
+            download = QPushButton("↓")
+            download.setToolTip("Download this job's ZIP results" if ready else "Results not yet available")
+            download.setAccessibleName("Download job " + str(job.get("id", "")))
+            download.setEnabled(ready)
+            download.clicked.connect(lambda _checked=False, jid=str(job.get("id")): self._download_for_job(jid))
+            self.table.setCellWidget(row, 6, download)
             if str(job.get("id")) == previous_selected:
                 selected_row = row
         if selected_row >= 0:
@@ -279,7 +301,9 @@ class RemoteTrainingPanel(QWidget):
             self.status.setText("Could not open folder: " + str(folder))
 
     def download(self):
-        job = self.selected_id()
+        self._download_for_job(self.selected_id())
+
+    def _download_for_job(self, job):
         record = self._jobs_by_id.get(job) if job else None
         if not record or record.get("status") != "completed" or not record.get("artifact"):
             self.update_download_state()
