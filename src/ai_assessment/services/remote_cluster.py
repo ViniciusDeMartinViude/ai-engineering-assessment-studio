@@ -2,6 +2,10 @@
 from __future__ import annotations
 import os
 import re
+import io
+import json
+import hashlib
+import zipfile
 from pathlib import Path
 import requests
 
@@ -28,6 +32,30 @@ class RemoteClusterClient:
             return resp
         except requests.RequestException as exc:
             raise RemoteClusterError(str(exc)) from exc
+
+    def upload_subset(self, subset_root: Path):
+        """Package a validated M3 export and upload it to the management API."""
+        root = subset_root.resolve()
+        if not (root / "manifest.json").is_file() or not (root / "data.yaml").is_file():
+            raise RemoteClusterError("Choose an exported four-class dataset subset")
+        data = io.BytesIO()
+        with zipfile.ZipFile(data, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
+            for path in sorted(root.rglob("*")):
+                if path.is_symlink():
+                    raise RemoteClusterError("Dataset symlinks are not supported")
+                if path.is_file():
+                    archive.write(path, path.relative_to(root).as_posix())
+        content = data.getvalue()
+        digest = hashlib.sha256(content).hexdigest()
+        response = self.request("POST", "/datasets/upload",
+            files={"file": ("subset.zip", content, "application/zip")},
+            data={"student_id": self.candidate_id, "sha256": digest},
+            timeout=(10, 300))
+        result = response.json()
+        dataset_id = result.get("dataset_id")
+        if not isinstance(dataset_id, str) or not dataset_id:
+            raise RemoteClusterError("Upload response did not contain dataset_id")
+        return result
 
     def submit(self, model: str, dataset: str, epochs: int, imgsz: int, batch: int):
         return self.request("POST", "/jobs", json={
