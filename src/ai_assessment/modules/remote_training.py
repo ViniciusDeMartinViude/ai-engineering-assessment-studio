@@ -42,7 +42,8 @@ class RemoteTrainingPanel(QWidget):
         self.model = QComboBox()
         self.model.addItems(["yolo26n.pt", "yolo26s.pt"])
         self.epochs = QSpinBox(); self.epochs.setRange(1, 200); self.epochs.setValue(5)
-        self.imgsz = QComboBox(); self.imgsz.addItems(["512", "640"])
+        self.imgsz = QSpinBox(); self.imgsz.setRange(320, 640); self.imgsz.setSingleStep(32); self.imgsz.setValue(512)
+        self.imgsz.setToolTip("Image size must be a multiple of 32, between 320 and 640, as required by the current cluster manager.")
         self.batch = QSpinBox(); self.batch.setRange(1, 8); self.batch.setValue(4)
         self.subset = QComboBox()
         self.refresh_subsets()
@@ -141,7 +142,7 @@ class RemoteTrainingPanel(QWidget):
     def submit(self):
         client=self.client()
         args=(self.model.currentText(),self.dataset.text().strip(),
-              self.epochs.value(),int(self.imgsz.currentText()),self.batch.value())
+              self.epochs.value(),self.imgsz.value(),self.batch.value())
         self.run_action(lambda:client.submit(*args),lambda job:(self.status.setText("Submitted: "+str(job.get("id", job.get("job_id", "?")))),self.refresh()))
 
     def refresh(self):
