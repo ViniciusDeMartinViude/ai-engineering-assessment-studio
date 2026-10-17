@@ -57,11 +57,11 @@ class RemoteClusterClient:
             raise RemoteClusterError("Upload response did not contain dataset_id")
         return result
 
-    def submit(self, model: str, dataset: str, epochs: int, imgsz: int, batch: int):
+    def submit(self, model: str, dataset: str, epochs: int, imgsz: int, batch: int, source_job_id: str | None = None):
         return self.request("POST", "/jobs", json={
             "student_id": self.candidate_id, "mode": "train",
             "model": model, "dataset": dataset, "epochs": epochs,
-            "imgsz": imgsz, "batch": batch}).json()
+            "imgsz": imgsz, "batch": batch, "source_job_id": source_job_id}).json()
 
     def jobs(self):
         rows = self.request("GET", "/jobs").json()
