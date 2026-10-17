@@ -2,7 +2,7 @@
 from __future__ import annotations
 import os
 from pathlib import Path
-from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal, Slot
+from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Signal, Slot
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QTableWidget, QTableWidgetItem, QSpinBox, QComboBox, QMessageBox
@@ -32,6 +32,9 @@ class RemoteTrainingPanel(QWidget):
         self.workspace = workspace
         self.pool = QThreadPool.globalInstance()
         self.busy = False
+        self.status_timer = QTimer(self)
+        self.status_timer.setInterval(5000)
+        self.status_timer.timeout.connect(self._auto_refresh)
         self.url = QLineEdit(os.getenv("AI_GPU_MANAGER_URL", ""))
         self.url.setPlaceholderText("http://MANAGER-LAN-IP:8000")
         self.token = QLineEdit()
@@ -43,7 +46,8 @@ class RemoteTrainingPanel(QWidget):
         self.model.addItems(["yolo26n.pt", "yolo26s.pt"])
         self.epochs = QSpinBox(); self.epochs.setRange(1, 200); self.epochs.setValue(5)
         self.imgsz = QSpinBox(); self.imgsz.setRange(320, 640); self.imgsz.setSingleStep(32); self.imgsz.setValue(512)
-        self.imgsz.setToolTip("Image size must be a multiple of 32, between 320 and 640, as required by the current cluster manager.")
+        self.imgsz.setToolTip("Enter any size from 320 to 640. It rounds to the nearest multiple of 32 after editing.")
+        self.imgsz.editingFinished.connect(self.normalize_image_size)
         self.batch = QSpinBox(); self.batch.setRange(1, 8); self.batch.setValue(4)
         self.subset = QComboBox()
         self.refresh_subsets()
@@ -73,6 +77,17 @@ class RemoteTrainingPanel(QWidget):
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         layout.addWidget(self.table)
 
+    def normalize_image_size(self):
+        """Round to nearest 32; half-way cases round upward."""
+        number = self.imgsz.value()
+        normalized = max(320, min(640, ((number + 16) // 32) * 32))
+        if number != normalized:
+            self.imgsz.setValue(normalized)
+
+    def _auto_refresh(self):
+        if self.isVisible() and not self.busy and self.url.text().strip() and self.token.text().strip():
+            self.refresh()
+
     def refresh_subsets(self):
         """Re-read M3 exports; retain selection if it still exists."""
         previous = self.subset.currentData()
@@ -101,6 +116,12 @@ class RemoteTrainingPanel(QWidget):
     def showEvent(self, event):
         super().showEvent(event)
         self.refresh_subsets()
+        self.status_timer.start()
+        self._auto_refresh()
+
+    def hideEvent(self, event):
+        self.status_timer.stop()
+        super().hideEvent(event)
 
     def client(self):
         return RemoteClusterClient(self.url.text().strip(),self.token.text().strip(),
@@ -140,6 +161,7 @@ class RemoteTrainingPanel(QWidget):
         self.status.setText("Dataset uploaded: " + dataset_id + ". Ready to train.")
 
     def submit(self):
+        self.normalize_image_size()
         client=self.client()
         args=(self.model.currentText(),self.dataset.text().strip(),
               self.epochs.value(),self.imgsz.value(),self.batch.value())
