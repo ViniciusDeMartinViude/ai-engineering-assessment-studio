@@ -32,3 +32,10 @@ A successful POST should return `{"dataset_id":"subset-c014-...","sha256":"...",
 **Configuration:** `MAX_DATASET_UPLOAD_MB` defaults to 1000 and `MAX_DATASET_UNPACKED_MB` to 3000. Persist and share the existing `DATASETS_DIR` manager Docker volume across rebuilds. FastAPI multipart handling requires `python-multipart`, already needed by your worker artifact upload route.
 
 **Test:** Use the Studio's Upload selected subset button, then Start remote training. Confirm dataset directory under `DATASETS_DIR` and worker training can load the uploaded `data.yaml`. Keep direct administrator access restricted to trusted organizer machines.
+
+## Chained training from prior best.pt
+Remote Training now offers **Starting weights** with official base weights or completed remote runs belonging to the current candidate. Choose a previous run, and the UI pins its YOLO architecture and submits the optional `source_job_id`. It stays selectable after automatic status refresh.
+
+Install the companion GPU Cluster v0.9 manager and worker patch from `gpu-cluster-v09-chained-training.zip` on the corresponding machines first. The manager serves the previous run's `weights/best.pt` to an authenticated worker; the worker mounts it read-only inside the existing trainer image. Chained runs keep their own unique job ID and artifacts. The source training must be completed and have a valid checkpoint.
+
+This **continues weights from best.pt**, not a literal resume of optimizer state/epoch count from last.pt. The source architecture remains the same (yolo26n -> yolo26n, or yolo26s -> yolo26s). Multiple successive chains are supported.
