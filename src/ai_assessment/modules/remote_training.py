@@ -42,6 +42,9 @@ class RemoteTrainingPanel(QWidget):
         self.token.setPlaceholderText("Cluster API key (trusted operator only)")
         self.dataset = QLineEdit(os.getenv("AI_GPU_DATASET", "dates-v16"))
         self.dataset.setToolTip("Filled after uploading an M3 four-class subset; pre-staged IDs also work.")
+        self.source_run = QComboBox()
+        self.source_run.addItem("Official YOLO base weights (new training)", None)
+        self.source_run.currentIndexChanged.connect(self._source_changed)
         self.model = QComboBox()
         self.model.addItems(["yolo26n.pt", "yolo26s.pt"])
         self.epochs = QSpinBox(); self.epochs.setRange(1, 200); self.epochs.setValue(5)
@@ -59,7 +62,7 @@ class RemoteTrainingPanel(QWidget):
         note = QLabel("Direct GPU cluster training (trusted operator pilot). Upload a four-class Dataset Studio subset or use a pre-staged dataset ID.")
         note.setWordWrap(True); layout.addWidget(note)
         for caption, widget in (("Manager URL",self.url),("Cluster API key",self.token),("Dataset ID",self.dataset),
-                                ("Model",self.model),("Epochs",self.epochs),("Image size",self.imgsz),("Batch",self.batch)):
+                                ("Model",self.model),("Starting weights",self.source_run),("Epochs",self.epochs),("Image size",self.imgsz),("Batch",self.batch)):
             line=QHBoxLayout(); line.addWidget(QLabel(caption)); line.addWidget(widget, 1); layout.addLayout(line)
         selection = QHBoxLayout()
         selection.addWidget(self.subset, 1)
@@ -164,14 +167,46 @@ class RemoteTrainingPanel(QWidget):
         self.normalize_image_size()
         client=self.client()
         args=(self.model.currentText(),self.dataset.text().strip(),
-              self.epochs.value(),self.imgsz.value(),self.batch.value())
+              self.epochs.value(),self.imgsz.value(),self.batch.value(),
+              (self.source_run.currentData() or {}).get("id"))
         self.run_action(lambda:client.submit(*args),lambda job:(self.status.setText("Submitted: "+str(job.get("id", job.get("job_id", "?")))),self.refresh()))
 
     def refresh(self):
         client=self.client()
         self.run_action(client.jobs,self.display)
 
+    def _source_changed(self, *_):
+        model = self.source_run.currentData()
+        if isinstance(model, dict):
+            index = self.model.findText(str(model.get("model", "")))
+            if index >= 0:
+                self.model.setCurrentIndex(index)
+            self.model.setEnabled(False)
+        else:
+            self.model.setEnabled(True)
+
     def display(self, jobs):
+        previous = self.source_run.currentData()
+        selected_id = previous.get("id") if isinstance(previous, dict) else None
+        self.source_run.blockSignals(True)
+        try:
+            self.source_run.clear()
+            self.source_run.addItem("Official YOLO base weights (new training)", None)
+            for job in jobs:
+                if job.get("status") == "completed" and job.get("mode") == "train" and job.get("artifact"):
+                    self.source_run.addItem(
+                        f"{str(job.get('id', ''))[:10]} | {job.get('model', '')} | {job.get('dataset', '')}",
+                        {"id": job.get("id"), "model": job.get("model")},
+                    )
+            if selected_id:
+                for idx in range(1, self.source_run.count()):
+                    item = self.source_run.itemData(idx)
+                    if isinstance(item, dict) and item.get("id") == selected_id:
+                        self.source_run.setCurrentIndex(idx)
+                        break
+        finally:
+            self.source_run.blockSignals(False)
+        self._source_changed()
         self.table.setRowCount(0)
         for job in jobs:
             row=self.table.rowCount();self.table.insertRow(row)
