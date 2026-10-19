@@ -465,7 +465,21 @@ class DatasetService:
                         continue
                     destination_image = image_output / record.image_path.name
                     destination_label = label_output / f"{record.image_path.stem}.txt"
-                    shutil.copy2(record.image_path, destination_image)
+                    try:
+                        shutil.copy2(record.image_path, destination_image)
+                    except OSError as error:
+                        source = record.image_path
+                        reason = (
+                            "The source image is no longer accessible. Rescan the dataset "
+                            "and verify its folder or drive is connected."
+                            if not source.is_file()
+                            else "Check that both source and destination paths are accessible. "
+                                 "On Windows, very long paths can also cause WinError 3."
+                        )
+                        raise DatasetError(
+                            f"Could not export image '{source}' to '{destination_image}'. "
+                            f"{reason} Original error: {error}"
+                        ) from error
                     destination_label.write_text(
                         "\n".join(
                             f"{mapping[annotation.class_id]} {' '.join(annotation.raw_value_tokens)}"
@@ -517,6 +531,15 @@ class DatasetService:
             )
             os.replace(staging, final)
             return ExportResult(final, final / "manifest.json", manifest)
+        except OSError as error:
+            if staging.exists():
+                shutil.rmtree(staging, ignore_errors=True)
+            raise DatasetError(
+                f"Dataset export filesystem failure in '{output_root}'. "
+                "Verify the candidate workspace still exists and is writable; "
+                "on Windows check path lengths and disconnected folders. "
+                f"Original error: {error}"
+            ) from error
         except Exception:
             if staging.exists():
                 shutil.rmtree(staging, ignore_errors=True)
