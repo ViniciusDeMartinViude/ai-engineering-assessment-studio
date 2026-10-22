@@ -4,7 +4,7 @@ import os
 from datetime import datetime
 from pathlib import Path
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Signal, Slot, QUrl
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtGui import QDesktopServices, QTextCursor
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QTableWidget, QTableWidgetItem, QSpinBox, QComboBox, QMessageBox, QPlainTextEdit
@@ -349,7 +349,7 @@ class RemoteTrainingPanel(QWidget):
             self.log_view.clear()
         self._log_offset[job_id] = next_offset
         if received:
-            self.log_view.moveCursor(self.log_view.textCursor().MoveOperation.End)
+            self.log_view.moveCursor(QTextCursor.MoveOperation.End)
             self.log_view.insertPlainText(received)
             bar = self.log_view.verticalScrollBar()
             bar.setValue(bar.maximum())
