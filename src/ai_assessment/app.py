@@ -4,13 +4,36 @@ import argparse
 import os
 import re
 import sys
+import subprocess
 from pathlib import Path
+from . import __version__
 
 from .core.workspace import CandidateWorkspace
 from .modules.pages import PAGES, PageDefinition
 
 
 DEFAULT_CANDIDATE_ID = "C014"
+
+def runtime_version_info():
+    module = Path(__file__).resolve()
+    revision = "unavailable"
+    branch = "unavailable"
+    for folder in module.parents:
+        if (folder / ".git").exists():
+            try:
+                revision = subprocess.check_output(
+                    ["git", "-C", str(folder), "rev-parse", "--short=12", "HEAD"],
+                    text=True, stderr=subprocess.DEVNULL, timeout=3,
+                ).strip()
+                branch = subprocess.check_output(
+                    ["git", "-C", str(folder), "branch", "--show-current"],
+                    text=True, stderr=subprocess.DEVNULL, timeout=3,
+                ).strip() or "detached HEAD"
+            except (OSError, subprocess.SubprocessError):
+                pass
+            break
+    return __version__, revision, branch, str(module), sys.executable
+
 
 
 def default_workspace_root(candidate_id: str | None = None) -> Path:
@@ -135,6 +158,8 @@ def main(argv: list[str] | None = None) -> int:
             QStackedWidget,
             QVBoxLayout,
             QWidget,
+            QPushButton,
+            QMessageBox,
         )
         from .modules.calibration import CalibrationPage
         from .modules.dataset import DatasetPage
@@ -190,7 +215,8 @@ def main(argv: list[str] | None = None) -> int:
     class MainWindow(QMainWindow):
         def __init__(self) -> None:
             super().__init__()
-            self.setWindowTitle("AI Engineering Assessment Studio")
+            self.build_info = runtime_version_info()
+            self.setWindowTitle("AI Engineering Assessment Studio — v" + self.build_info[0])
             self.resize(1160, 760)
 
             container = QWidget()
@@ -219,6 +245,14 @@ def main(argv: list[str] | None = None) -> int:
             sidebar_layout.addWidget(product)
             sidebar_layout.addWidget(candidate)
             sidebar_layout.addWidget(self.nav, 1)
+            version_label = QLabel(
+                f"Version {self.build_info[0]}  •  {self.build_info[1]}"
+            )
+            version_label.setToolTip("Branch: " + self.build_info[2])
+            sidebar_layout.addWidget(version_label)
+            about_button = QPushButton("About / Version")
+            about_button.clicked.connect(self.show_version_info)
+            sidebar_layout.addWidget(about_button)
 
             self.stack = QStackedWidget()
             self.stack.setMinimumSize(0, 0)
@@ -275,6 +309,19 @@ def main(argv: list[str] | None = None) -> int:
             root.addWidget(self.stack, 1)
             self.setCentralWidget(container)
             self.statusBar().showMessage(self.status_message())
+
+        def show_version_info(self) -> None:
+            version, revision, branch, module, executable = self.build_info
+            QMessageBox.information(
+                self, "About Assessment Studio",
+                f"Version: {version}\\n"
+                f"Commit: {revision}\\n"
+                f"Branch: {branch}\\n\\n"
+                f"Loaded module: {module}\\n\\n"
+                f"Python executable: {executable}\\n\\n"
+                "This identifies the running installation, which may differ "
+                "from the folder where you executed git pull."
+            )
 
         def add_page(self, page: QWidget) -> None:
             scroll = QScrollArea()
