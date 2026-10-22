@@ -300,6 +300,16 @@ class RemoteTrainingPanel(QWidget):
 
     def display(self, jobs):
         previous_selected = self.selected_id()
+        if not jobs:
+            # Manager may have been reset: invalidate all job-linked UI state.
+            self._log_offset.clear()
+            self._log_job_id = None
+            self.log_view.clear()
+            self.log_heading.setText("Live training output — select a job to view")
+            self.log_status.setText("No remote jobs. Manager history may have been reset.")
+            self.dialog_log_header.setText("No remote job selected")
+            self.download_button.setEnabled(False)
+            self.download_hint.setText("No remote jobs available.")
         self._jobs_by_id = {str(job.get("id")): job for job in jobs if job.get("id")}
         previous = self.source_run.currentData()
         selected_id = previous.get("id") if isinstance(previous, dict) else None
