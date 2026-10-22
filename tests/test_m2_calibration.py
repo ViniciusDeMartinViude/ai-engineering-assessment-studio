@@ -350,6 +350,11 @@ class CalibrationServiceTests(unittest.TestCase):
                 page._image_clicked(30, 30)
                 page._send_robot_command.assert_not_called()
                 self.assertIn("RTSP stream differs", page.status.text())
+                record = page._record
+                page.source_choice.setCurrentIndex(0)
+                self.assertEqual(page._record, record)
+                self.assertTrue(page._current_image.isNull())
+                self.assertFalse(page.freeze_button.isEnabled())
             finally:
                 page.shutdown()
 
