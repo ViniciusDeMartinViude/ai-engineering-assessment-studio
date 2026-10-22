@@ -44,7 +44,8 @@ class RemoteTrainingPanel(QWidget):
         self.token = QLineEdit()
         self.token.setEchoMode(QLineEdit.EchoMode.Password)
         self.token.setPlaceholderText("Cluster API key (trusted operator only)")
-        self.dataset = QLineEdit(os.getenv("AI_GPU_DATASET", "dates-v16"))
+        self.dataset = QLineEdit(os.getenv("AI_GPU_DATASET", ""))
+        self.dataset.setPlaceholderText("Upload a subset or enter a pre-staged dataset ID")
         self.dataset.setToolTip("Filled after uploading an M3 four-class subset; pre-staged IDs also work.")
         self.source_run = QComboBox()
         self.source_run.addItem("Official YOLO base weights (new training)", None)
@@ -187,6 +188,9 @@ class RemoteTrainingPanel(QWidget):
 
     def submit(self):
         self.normalize_image_size()
+        if not self.dataset.text().strip():
+            self.status.setText("Upload a four-class subset or enter an existing cluster dataset ID before training.")
+            return
         client=self.client()
         args=(self.model.currentText(),self.dataset.text().strip(),
               self.epochs.value(),self.imgsz.value(),self.batch.value(),
