@@ -325,6 +325,7 @@ class CalibrationPage(QWidget):
         self.setObjectName("calibrationPage")
         self._current_image = QImage()
         self._source_mode: str | None = None
+        self._selected_source_type = "camera"
         self._frozen = False
         self._points: list[tuple[float, float] | None] = [None] * 4
         self._selected_row = 0
@@ -614,7 +615,17 @@ class CalibrationPage(QWidget):
     def _source_choice_changed(self, _index: int) -> None:
         if self._camera_thread is not None:
             return
-        rtsp = self.source_choice.currentData() == "rtsp"
+        source_type = str(self.source_choice.currentData())
+        if source_type != self._selected_source_type:
+            self._selected_source_type = source_type
+            self._frozen = False
+            self._camera_metadata = {}
+            self._set_current_image(QImage())
+            self.freeze_button.setEnabled(False)
+            self.freeze_button.setText("Freeze frame")
+            self.test_result.setText("ROBOT X: --     Y: --")
+            self._set_status("Source changed. Start the new source; points and matrix are retained.")
+        rtsp = source_type == "rtsp"
         self.camera_index_label.setVisible(not rtsp)
         self.camera_index.setVisible(not rtsp)
         self.rtsp_row.setVisible(rtsp)
