@@ -91,6 +91,14 @@ class RemoteClusterClient:
         return [job for job in rows if isinstance(job, dict)
                 and job.get("student_id") == self.candidate_id]
 
+    def log(self, job_id: str, offset: int = 0):
+        self._check_owned(job_id)
+        return self.request(
+            "GET", f"/jobs/{job_id}/log",
+            params={"offset": offset, "limit": 32768},
+            timeout=(5, 15),
+        ).json()
+
     def cancel(self, job_id: str):
         self._check_owned(job_id)
         return self.request("POST", f"/jobs/{job_id}/cancel").json()
