@@ -1,6 +1,7 @@
 """Remote cluster controls. All network calls run off the Qt GUI thread."""
 from __future__ import annotations
 import os
+import traceback
 from datetime import datetime
 from pathlib import Path
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Signal, Slot, QUrl
@@ -19,6 +20,9 @@ class Signals(QObject):
 class Action(QRunnable):
     def __init__(self, fn):
         super().__init__()
+        # Qt must not delete this runnable while queued result/error signals
+        # still refer to its Python-owned Signals QObject.
+        self.setAutoDelete(False)
         self.fn = fn
         self.signals = Signals()
     @Slot()
@@ -34,6 +38,7 @@ class RemoteTrainingPanel(QWidget):
         self.workspace = workspace
         self.pool = QThreadPool.globalInstance()
         self.busy = False
+        self._active_action = None
         self._download_path = None
         self._jobs_by_id = {}
         self.status_timer = QTimer(self)
@@ -155,17 +160,36 @@ class RemoteTrainingPanel(QWidget):
                                    self.workspace.session.candidate_id)
 
     def run_action(self, fn, callback):
-        if self.busy: return
-        self.busy=True
-        task=Action(fn)
-        task.signals.result.connect(self._finish)
-        task.signals.error.connect(self._finish)
-        task.signals.result.connect(callback)
-        task.signals.error.connect(lambda err: self.status.setText("Error: "+err))
+        if self.busy:
+            return
+        self.busy = True
+        task = Action(fn)
+        self._active_action = task
+        # One GUI-thread handler per outcome; don't release the QRunnable
+        # before all queued signal callbacks have finished.
+        task.signals.result.connect(
+            lambda result, action=task: self._action_finished(action, callback, result=result)
+        )
+        task.signals.error.connect(
+            lambda error, action=task: self._action_finished(action, callback, error=error)
+        )
         self.pool.start(task)
 
-    def _finish(self, *_):
-        self.busy=False
+    def _action_finished(self, action, callback, *, result=None, error=None):
+        try:
+            if error is not None:
+                self.status.setText("Error: " + str(error))
+            else:
+                callback(result)
+        except Exception as exc:
+            traceback.print_exc()
+            self.status.setText("Remote Training UI error: " + str(exc))
+        finally:
+            # An action callback may initiate another request (e.g. refresh
+            # after submit). Release only if this is still the active task.
+            if self._active_action is action:
+                self._active_action = None
+                self.busy = False
 
     def upload(self):
         self.refresh_subsets()
@@ -214,7 +238,7 @@ class RemoteTrainingPanel(QWidget):
             self.status.setText(
                 f"Submitted job {job_id[:12]} with dataset: {actual_dataset}"
             )
-        self.refresh()
+        QTimer.singleShot(0, self.refresh)
 
     def refresh(self):
         client=self.client()
@@ -298,7 +322,7 @@ class RemoteTrainingPanel(QWidget):
         job=self.selected_id()
         if job:
             client=self.client()
-            self.run_action(lambda:client.cancel(job),lambda _:(self.status.setText("Cancellation requested"),self.refresh()))
+            self.run_action(lambda:client.cancel(job),lambda _:(self.status.setText("Cancellation requested"),QTimer.singleShot(0, self.refresh)))
 
     def update_download_state(self):
         job_id = self.selected_id()
