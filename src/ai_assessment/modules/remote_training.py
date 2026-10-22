@@ -7,7 +7,7 @@ from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Signal, Slot
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
-    QTableWidget, QTableWidgetItem, QSpinBox, QComboBox, QMessageBox
+    QTableWidget, QTableWidgetItem, QSpinBox, QComboBox, QMessageBox, QPlainTextEdit
 )
 from ..services.remote_cluster import RemoteClusterClient
 from ..services.training import validate_subset
@@ -36,9 +36,14 @@ class RemoteTrainingPanel(QWidget):
         self.busy = False
         self._download_path = None
         self._jobs_by_id = {}
+        self._log_offset = {}
+        self._log_job_id = None
         self.status_timer = QTimer(self)
         self.status_timer.setInterval(5000)
         self.status_timer.timeout.connect(self._auto_refresh)
+        self.log_timer = QTimer(self)
+        self.log_timer.setInterval(2500)
+        self.log_timer.timeout.connect(self.refresh_live_log)
         self.url = QLineEdit(os.getenv("AI_GPU_MANAGER_URL", ""))
         self.url.setPlaceholderText("http://MANAGER-LAN-IP:8000")
         self.token = QLineEdit()
@@ -100,9 +105,20 @@ class RemoteTrainingPanel(QWidget):
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         layout.addWidget(self.table)
         self.table.itemSelectionChanged.connect(self.update_download_state)
+        self.table.itemSelectionChanged.connect(self.log_selection_changed)
         self.table.setColumnWidth(7, 86)
         self.table.setColumnWidth(4, 245)
         self.table.setToolTip("Start shows submission time on cluster v0.8; End shows terminal update time.")
+        self.log_heading = QLabel("Live training output — select a job to view")
+        layout.addWidget(self.log_heading)
+        self.log_view = QPlainTextEdit()
+        self.log_view.setReadOnly(True)
+        self.log_view.setPlaceholderText("Select a remote job to load live training output.")
+        self.log_view.setMinimumHeight(210)
+        self.log_view.document().setMaximumBlockCount(3000)
+        layout.addWidget(self.log_view)
+        self.log_status = QLabel("Log polling idle")
+        layout.addWidget(self.log_status)
 
     def normalize_image_size(self):
         """Round to nearest 32; half-way cases round upward."""
@@ -144,10 +160,13 @@ class RemoteTrainingPanel(QWidget):
         super().showEvent(event)
         self.refresh_subsets()
         self.status_timer.start()
+        self.log_timer.start()
         self._auto_refresh()
+        self.refresh_live_log()
 
     def hideEvent(self, event):
         self.status_timer.stop()
+        self.log_timer.stop()
         super().hideEvent(event)
 
     def client(self):
@@ -289,6 +308,58 @@ class RemoteTrainingPanel(QWidget):
             self.table.selectRow(selected_row)
         self.update_download_state()
         self.status.setText(f"{len(jobs)} remote jobs")
+
+    def log_selection_changed(self):
+        job_id = self.selected_id()
+        if job_id == self._log_job_id:
+            return
+        self._log_job_id = job_id
+        self.log_view.clear()
+        self.log_heading.setText(
+            "Live training output — " + job_id[:12] if job_id
+            else "Live training output — select a job to view"
+        )
+        self.log_status.setText("Loading log..." if job_id else "Log polling idle")
+        self.refresh_live_log()
+
+    def refresh_live_log(self):
+        job_id = self.selected_id()
+        if not job_id or self.busy or not self.isVisible():
+            return
+        try:
+            client = self.client()
+        except Exception as exc:
+            self.log_status.setText("Log unavailable: " + str(exc))
+            return
+        offset = self._log_offset.get(job_id, 0)
+        self.run_action(
+            lambda: client.log(job_id, offset),
+            lambda result, jid=job_id, pos=offset: self.live_log_finished(jid, pos, result)
+        )
+
+    def live_log_finished(self, job_id, requested_offset, result):
+        if self.selected_id() != job_id:
+            return
+        received = result.get("text", "")
+        next_offset = result.get("offset", requested_offset)
+        if not isinstance(received, str) or not isinstance(next_offset, int):
+            self.log_status.setText("Unexpected log response from manager")
+            return
+        if next_offset < requested_offset:
+            self.log_view.clear()
+        self._log_offset[job_id] = next_offset
+        if received:
+            self.log_view.moveCursor(self.log_view.textCursor().MoveOperation.End)
+            self.log_view.insertPlainText(received)
+            bar = self.log_view.verticalScrollBar()
+            bar.setValue(bar.maximum())
+        job = self._jobs_by_id.get(job_id, {})
+        self.log_status.setText(
+            f"Job {str(job.get('status', 'unknown'))} · {next_offset} log bytes"
+            + (" · receiving more..." if result.get("more") else "")
+        )
+        if result.get("more"):
+            QTimer.singleShot(0, self.refresh_live_log)
 
     def selected_id(self):
         row=self.table.currentRow()
