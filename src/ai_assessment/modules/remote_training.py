@@ -95,12 +95,13 @@ class RemoteTrainingPanel(QWidget):
         self.download_hint.setWordWrap(True)
         layout.addWidget(self.download_hint)
         self.status=QLabel("Ready");layout.addWidget(self.status)
-        self.table=QTableWidget(0, 7)
-        self.table.setHorizontalHeaderLabels(["Job ID", "Status", "GPU node", "Model", "Start", "End", "Download"])
+        self.table=QTableWidget(0, 8)
+        self.table.setHorizontalHeaderLabels(["Job ID", "Status", "GPU node", "Model", "Dataset", "Start", "End", "Download"])
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         layout.addWidget(self.table)
         self.table.itemSelectionChanged.connect(self.update_download_state)
-        self.table.setColumnWidth(6, 86)
+        self.table.setColumnWidth(7, 86)
+        self.table.setColumnWidth(4, 245)
         self.table.setToolTip("Start shows submission time on cluster v0.8; End shows terminal update time.")
 
     def normalize_image_size(self):
@@ -195,7 +196,25 @@ class RemoteTrainingPanel(QWidget):
         args=(self.model.currentText(),self.dataset.text().strip(),
               self.epochs.value(),self.imgsz.value(),self.batch.value(),
               (self.source_run.currentData() or {}).get("id"))
-        self.run_action(lambda:client.submit(*args),lambda job:(self.status.setText("Submitted: "+str(job.get("id", job.get("job_id", "?")))),self.refresh()))
+        requested_dataset = args[1]
+        self.run_action(
+            lambda: client.submit(*args),
+            lambda job: self.submission_finished(job, requested_dataset),
+        )
+
+    def submission_finished(self, job, requested_dataset):
+        actual_dataset = str(job.get("dataset", ""))
+        job_id = str(job.get("id", job.get("job_id", "?")))
+        if actual_dataset != requested_dataset:
+            self.status.setText(
+                f"WARNING: job {job_id[:12]} submitted with dataset "
+                f"{actual_dataset!r}, expected {requested_dataset!r}."
+            )
+        else:
+            self.status.setText(
+                f"Submitted job {job_id[:12]} with dataset: {actual_dataset}"
+            )
+        self.refresh()
 
     def refresh(self):
         client=self.client()
@@ -255,14 +274,15 @@ class RemoteTrainingPanel(QWidget):
             start_time = job.get("started_at") or job.get("created_at")
             terminal = job.get("status") in ("completed", "failed", "cancelled")
             end_time = (job.get("finished_at") or job.get("updated_at")) if terminal else None
-            self.table.setItem(row, 4, QTableWidgetItem(self.format_job_time(start_time)))
-            self.table.setItem(row, 5, QTableWidgetItem(self.format_job_time(end_time)))
+            self.table.setItem(row, 4, QTableWidgetItem(str(job.get("dataset") or "—")))
+            self.table.setItem(row, 5, QTableWidgetItem(self.format_job_time(start_time)))
+            self.table.setItem(row, 6, QTableWidgetItem(self.format_job_time(end_time)))
             download = QPushButton("↓")
             download.setToolTip("Download this job's ZIP results" if ready else "Results not yet available")
             download.setAccessibleName("Download job " + str(job.get("id", "")))
             download.setEnabled(ready)
             download.clicked.connect(lambda _checked=False, jid=str(job.get("id")): self._download_for_job(jid))
-            self.table.setCellWidget(row, 6, download)
+            self.table.setCellWidget(row, 7, download)
             if str(job.get("id")) == previous_selected:
                 selected_row = row
         if selected_row >= 0:
