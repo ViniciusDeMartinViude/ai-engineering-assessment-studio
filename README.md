@@ -84,12 +84,12 @@ Events are stored in `candidate_workspaces\C014\logs\events.jsonl`; server recei
 
 ## M2 calibration
 
-Open the **Calibration** page from the application sidebar. Start a camera or open a saved image, freeze the full-frame image, select four image points, enter their matching robot X/Y coordinates, and choose exactly one transform:
+Open the **Calibration** page from the application sidebar. Choose **Webcam** or **RTSP stream** as the live source, or open a saved image. For RTSP, enter an editable `rtsp://` or `rtsps://` URL (for example, `rtsp://10.16.224.100:8554/camera`) and click **Start stream**. Freeze the full-frame image, select four image points, enter their matching robot X/Y coordinates, and choose exactly one transform:
 
 - `2 x 3 Affine` for a plane where perspective is negligible.
 - `3 x 3 Perspective` for a plane viewed at an angle.
 
-After calculating the matrix, click the frozen image to see a rounded integer robot X/Y prediction. The 5x cursor magnifier shows a pixel-level view. The matrix display is rounded to two decimals, while the workspace file retains full precision. Stopping and restarting the camera, resuming live video, or loading another image retains the points and matrix. Freeze again to test; a different image size or source shows a warning, and a robot command is blocked. **Erase points and matrix** explicitly clears the current values. A previously saved workspace calibration remains available to load.
+After calculating the matrix, click the frozen image to see a rounded integer robot X/Y prediction. The 5x cursor magnifier shows a pixel-level view. The matrix display is rounded to two decimals, while the workspace file retains full precision. Stopping and restarting the webcam or RTSP stream, resuming live video, or loading another image retains the points and matrix. Freeze again to test; a different image size or source shows a warning, and a robot command is blocked. RTSP disconnects retry until you click **Stop stream**. The RTSP URL stays in the current session; saved calibration metadata contains a fingerprint to recognize the same stream without saving its URL or credentials. **Erase points and matrix** explicitly clears the current values. A previously saved workspace calibration remains available to load.
 
 To test a robot move, enter its base URL (for example, `http://192.168.1.10:8080`) or its full `/command` URL and enable **Send move on test click**. This option starts off. A valid click then shows the rounded X/Y and posts `{"command":"move","x":X,"y":Y,"z":100,"duration_ms":2000}` to `/command`. Network requests run outside the interface thread. The app does not queue a second move while one is in progress and does not retry a timed-out command because it may already have reached the controller. The URL stays in the current session and is not written to the workspace.
 
