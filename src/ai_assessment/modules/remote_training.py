@@ -8,7 +8,7 @@ from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Signal, Slot
 from PySide6.QtGui import QDesktopServices, QTextCursor
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
-    QTableWidget, QTableWidgetItem, QSpinBox, QComboBox, QMessageBox, QPlainTextEdit
+    QTableWidget, QTableWidgetItem, QSpinBox, QComboBox, QMessageBox, QPlainTextEdit, QDialog
 )
 from ..services.remote_cluster import RemoteClusterClient
 from ..services.training import validate_subset
@@ -85,11 +85,15 @@ class RemoteTrainingPanel(QWidget):
         selection.addWidget(self.upload_button)
         layout.addLayout(selection)
         buttons=QHBoxLayout()
+        self.open_log_button = QPushButton("Open Live Console")
+        self.open_log_button.setToolTip("Open a resizable live log window for the selected job")
+        self.open_log_button.clicked.connect(self.open_live_console)
         for caption, fn in (("Submit remote job", self.submit), ("Refresh jobs", self.refresh),
                             ("Cancel selected", self.cancel)):
             button=QPushButton(caption)
             button.clicked.connect(fn)
             buttons.addWidget(button)
+        buttons.addWidget(self.open_log_button)
         layout.addLayout(buttons)
         results_row = QHBoxLayout()
         self.download_button = QPushButton("Download results ZIP")
@@ -124,6 +128,18 @@ class RemoteTrainingPanel(QWidget):
         layout.addWidget(self.log_view)
         self.log_status = QLabel("Log polling idle")
         layout.addWidget(self.log_status)
+        self.log_dialog = QDialog(self)
+        self.log_dialog.setWindowTitle("Remote Training — Live Console")
+        self.log_dialog.resize(950, 550)
+        dialog_layout = QVBoxLayout(self.log_dialog)
+        self.dialog_log_header = QLabel("Select a training job in the main window")
+        dialog_layout.addWidget(self.dialog_log_header)
+        self.dialog_log_view = QPlainTextEdit()
+        self.dialog_log_view.setReadOnly(True)
+        # Both viewers share the same Qt document and receive each update.
+        self.dialog_log_view.setDocument(self.log_view.document())
+        dialog_layout.addWidget(self.dialog_log_view)
+
 
     def normalize_image_size(self):
         """Round to nearest 32; half-way cases round upward."""
@@ -333,11 +349,24 @@ class RemoteTrainingPanel(QWidget):
         self.update_download_state()
         self.status.setText(f"{len(jobs)} remote jobs")
 
+    def open_live_console(self):
+        job_id = self.selected_id()
+        if not job_id:
+            self.log_status.setText("Select a job in the table before opening its console.")
+            return
+        self.dialog_log_header.setText("Job: " + job_id)
+        self.log_dialog.show()
+        self.log_dialog.raise_()
+        self.log_dialog.activateWindow()
+        self.refresh_live_log()
+
     def log_selection_changed(self):
         job_id = self.selected_id()
         if job_id == self._log_job_id:
             return
         self._log_job_id = job_id
+        if job_id:
+            self.dialog_log_header.setText("Job: " + job_id)
         self.log_view.clear()
         self.log_heading.setText(
             "Live training output — " + job_id[:12] if job_id
