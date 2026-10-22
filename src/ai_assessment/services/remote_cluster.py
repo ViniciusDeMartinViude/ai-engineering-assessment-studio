@@ -30,6 +30,25 @@ class RemoteClusterClient:
                 headers={"x-api-key": self.key}, timeout=kwargs.pop("timeout", (5, 60)), **kwargs)
             resp.raise_for_status()
             return resp
+        except requests.HTTPError as exc:
+            response = exc.response
+            detail = None
+            if response is not None:
+                try:
+                    payload = response.json()
+                    detail = payload.get("detail") if isinstance(payload, dict) else None
+                except ValueError:
+                    pass
+            if isinstance(detail, list):
+                detail = "; ".join(
+                    str(item.get("msg", item)) if isinstance(item, dict) else str(item)
+                    for item in detail
+                )
+            if detail:
+                raise RemoteClusterError(
+                    f"Cluster HTTP {response.status_code} for {method} {path}: {detail}"
+                ) from exc
+            raise RemoteClusterError(str(exc)) from exc
         except requests.RequestException as exc:
             raise RemoteClusterError(str(exc)) from exc
 
