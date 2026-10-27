@@ -12,14 +12,16 @@ from .modules.pages import PAGES, PageDefinition
 
 def default_workspace_root(candidate_id: str | None = None) -> Path:
     current = Path.cwd()
-    if (current / "session.json").is_file():
-        return current
     workspace_parent = current / "candidate_workspaces"
+    # Explicit candidate selection must win over an unrelated session.json
+    # in the directory from which the application happened to be launched.
     if candidate_id:
         return workspace_parent / candidate_id
     configured = os.environ.get("AI_ASSESSMENT_WORKSPACE")
     if configured:
         return Path(configured)
+    if (current / "session.json").is_file():
+        return current
     raise ValueError(
         "Select this computer's candidate workspace with --candidate-id C### "
         "(your assigned ID) or --workspace candidate_workspaces/C###. "

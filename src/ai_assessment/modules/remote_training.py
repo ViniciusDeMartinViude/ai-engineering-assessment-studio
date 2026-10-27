@@ -76,6 +76,17 @@ class RemoteTrainingPanel(QWidget):
         layout = QVBoxLayout(self)
         note = QLabel("Direct GPU cluster training (trusted operator pilot). Upload a four-class Dataset Studio subset or use a pre-staged dataset ID.")
         note.setWordWrap(True); layout.addWidget(note)
+        # Show the source of the candidate identity before every upload/job.
+        self.identity_label = QLabel(
+            f"Submitting as {self.workspace.session.candidate_id} | "
+            f"Workspace: {self.workspace.root}"
+        )
+        self.identity_label.setWordWrap(True)
+        self.identity_label.setToolTip(
+            "Remote jobs are identified by session.json in this workspace, "
+            "not the computer name or the GPU worker."
+        )
+        layout.addWidget(self.identity_label)
         for caption, widget in (("Manager URL",self.url),("Cluster API key",self.token),("Dataset ID",self.dataset),
                                 ("Model",self.model),("Starting weights",self.source_run),("Epochs",self.epochs),("Image size",self.imgsz),("Batch",self.batch)):
             line=QHBoxLayout(); line.addWidget(QLabel(caption)); line.addWidget(widget, 1); layout.addLayout(line)
