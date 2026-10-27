@@ -92,11 +92,12 @@ class CandidateWorkspaceTests(unittest.TestCase):
             self.assertEqual(reopened.session.session_id, created.session.session_id)
             self.assertEqual(reopened.session.candidate_id, "C014")
 
-    def test_new_workspace_defaults_to_c014_without_candidate_id(self) -> None:
+    def test_new_generic_workspace_requires_candidate_id(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            workspace = load_workspace(Path(temp_dir) / "new-workspace")
-
-            self.assertEqual(workspace.session.candidate_id, "C014")
+            root = Path(temp_dir) / "new-workspace"
+            with self.assertRaisesRegex(ValueError, "new workspace needs a candidate ID"):
+                load_workspace(root)
+            self.assertFalse(root.exists())
 
     def test_new_candidate_folder_sets_candidate_id(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -104,6 +105,11 @@ class CandidateWorkspaceTests(unittest.TestCase):
 
             self.assertEqual(workspace.session.candidate_id, "C015")
             self.assertEqual(workspace.events.read_events()[0].candidate_id, "C015")
+
+    def test_new_generic_workspace_uses_explicit_candidate_id(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = load_workspace(Path(temp_dir) / "my-station", "C021")
+            self.assertEqual(workspace.session.candidate_id, "C021")
 
     def test_existing_candidate_folder_mismatch_is_rejected_without_new_event(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -122,13 +128,47 @@ class CandidateWorkspaceTests(unittest.TestCase):
                 with mock.patch.dict("ai_assessment.app.os.environ", {"AI_ASSESSMENT_WORKSPACE": ""}):
                     self.assertEqual(default_workspace_root("C016"), Path(temp_dir) / "candidate_workspaces" / "C016")
 
-    def test_single_existing_workspace_is_selected_by_default(self) -> None:
+    def test_explicit_candidate_id_overrides_copied_workspace_environment(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir) / "candidate_workspaces" / "C017"
-            CandidateWorkspace.create(root, candidate_id="C017")
+            root = Path(temp_dir) / "candidate_workspaces"
+            original = CandidateWorkspace.create(root / "C014", candidate_id="C014")
+            with mock.patch("ai_assessment.app.Path.cwd", return_value=Path(temp_dir)):
+                with mock.patch.dict("ai_assessment.app.os.environ", {"AI_ASSESSMENT_WORKSPACE": str(original.root)}):
+                    with contextlib.redirect_stdout(io.StringIO()) as output:
+                        self.assertEqual(main(["--candidate-id", "C019", "--headless-check"]), 0)
+            self.assertIn("candidate=C019", output.getvalue())
+            self.assertEqual(CandidateWorkspace.open(root / "C019").session.candidate_id, "C019")
+            self.assertEqual(CandidateWorkspace.open(root / "C014").session.session_id, original.session.session_id)
+
+    def test_current_workspace_takes_precedence_over_inherited_environment(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            old = CandidateWorkspace.create(Path(temp_dir) / "C014", candidate_id="C014")
+            current = CandidateWorkspace.create(Path(temp_dir) / "C020", candidate_id="C020")
+            with mock.patch("ai_assessment.app.Path.cwd", return_value=current.root):
+                with mock.patch.dict("ai_assessment.app.os.environ", {"AI_ASSESSMENT_WORKSPACE": str(old.root)}):
+                    self.assertEqual(default_workspace_root(), current.root)
+
+    def test_first_launch_without_identity_does_not_create_c014(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            stderr = io.StringIO()
             with mock.patch("ai_assessment.app.Path.cwd", return_value=Path(temp_dir)):
                 with mock.patch.dict("ai_assessment.app.os.environ", {"AI_ASSESSMENT_WORKSPACE": ""}):
-                    self.assertEqual(default_workspace_root(), root)
+                    with contextlib.redirect_stderr(stderr):
+                        with self.assertRaises(SystemExit) as raised:
+                            main(["--headless-check"])
+            self.assertEqual(raised.exception.code, 2)
+            self.assertIn("--candidate-id", stderr.getvalue())
+            self.assertFalse((Path(temp_dir) / "candidate_workspaces" / "C014").exists())
+
+    def test_single_existing_workspace_is_not_selected_implicitly(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "candidate_workspaces" / "C017"
+            original = CandidateWorkspace.create(root, candidate_id="C017")
+            with mock.patch("ai_assessment.app.Path.cwd", return_value=Path(temp_dir)):
+                with mock.patch.dict("ai_assessment.app.os.environ", {"AI_ASSESSMENT_WORKSPACE": ""}):
+                    with self.assertRaisesRegex(ValueError, "does not guess"):
+                        default_workspace_root()
+            self.assertEqual(CandidateWorkspace.open(root).session.session_id, original.session.session_id)
 
     def test_main_creates_requested_candidate_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -141,14 +181,14 @@ class CandidateWorkspaceTests(unittest.TestCase):
                 "C018",
             )
 
-    def test_ambiguous_existing_workspaces_require_selection(self) -> None:
+    def test_multiple_existing_workspaces_require_selection(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir) / "candidate_workspaces"
             CandidateWorkspace.create(root / "C014", candidate_id="C014")
             CandidateWorkspace.create(root / "C015", candidate_id="C015")
             with mock.patch("ai_assessment.app.Path.cwd", return_value=Path(temp_dir)):
                 with mock.patch.dict("ai_assessment.app.os.environ", {"AI_ASSESSMENT_WORKSPACE": ""}):
-                    with self.assertRaisesRegex(ValueError, "Multiple candidate workspaces"):
+                    with self.assertRaisesRegex(ValueError, "does not guess"):
                         default_workspace_root()
 
     def test_candidate_id_mismatch_exits_with_clear_error(self) -> None:
