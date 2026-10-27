@@ -40,38 +40,38 @@ bash install_macos.sh
 
 The script asks for an environment name (default `ai-assessment-studio`), creates or reuses a Python 3.12 Conda environment, installs the macOS PyTorch wheels and `.[gui]`, then checks that the application imports and that a CPU or MPS tensor can be created. If Conda is not found, initialize it with `conda init zsh` (or `conda init bash` for Bash), reopen Terminal, and rerun the script. Existing environments must use Python 3.12.
 
-After setup, open a new Terminal in the repository:
+After setup, open a new Terminal in the repository. Replace `C015` with the candidate ID assigned to this computer:
 
 ```bash
 conda activate ai-assessment-studio
-python -m ai_assessment --headless-check --workspace candidate_workspaces/C014
-python -m ai_assessment --workspace candidate_workspaces/C014
+python -m ai_assessment --headless-check --candidate-id C015
+python -m ai_assessment --candidate-id C015
 ```
 
 On Apple Silicon, select `mps` in Training when the installer reports `device: mps`; otherwise select `cpu`. Intel Macs install the last available compatible PyTorch 2.2.2 / torchvision 0.17.2 wheels and train on CPU. macOS does not use the Windows CUDA PyTorch wheels. This is a developer/practice install; the official assessment workstation remains the Windows 11 baseline. A real Mac test of the camera, training, and simulator is still needed.
 
 ## Run the shell and tests
 
-Create or reopen the default `C014` workspace and launch the desktop shell:
+Assign each computer its own candidate ID before launching. The Conda environment name and the Windows computer name do not set the candidate ID. Replace `C015` in these examples with the ID assigned to this computer:
 
 ```bat
-python -m ai_assessment --workspace candidate_workspaces\C014
+python -m ai_assessment --candidate-id C015
 ```
 
-The sidebar shows the candidate ID saved in the active workspace's `session.json`. For a new candidate workspace, use its ID as the folder name; the app will assign that ID automatically:
+The sidebar shows the candidate ID saved in the active workspace's `session.json`. You can also specify a new candidate-style workspace folder directly:
 
 ```bat
 python -m ai_assessment --workspace candidate_workspaces\C015
 ```
 
-Alternatively, `python -m ai_assessment --candidate-id C015` creates or opens `candidate_workspaces/C015` when no workspace path is provided. From inside an existing candidate workspace, the app reopens that workspace. From the repository root, it automatically opens a single existing candidate workspace; when several exist, provide `--workspace` so the app does not guess. Without any existing workspace or candidate ID, the practice default remains `C014`.
+The `--candidate-id` option creates or opens the matching `candidate_workspaces/C015` folder when run from the repository root. It takes precedence over an inherited `AI_ASSESSMENT_WORKSPACE` setting. An explicit `--workspace` path takes precedence over both. From inside an existing candidate workspace, the app reopens that workspace. From the repository root, specify an ID or workspace on every launch; the app does not guess from existing workspaces or create `C014` silently. Check an inherited setting on Windows with `Get-ChildItem Env:AI_ASSESSMENT_WORKSPACE` in PowerShell.
 
-When reopening, the saved session ID must match a candidate-style folder name and any explicit `--candidate-id`. If an older run created `candidate_workspaces/C015/session.json` with `C014`, startup reports the mismatch instead of displaying the wrong identity. Preserve that workspace and its audit events; create a correctly identified workspace for new work rather than editing `session.json` by hand.
+When reopening, the saved session ID must match a candidate-style folder name and any explicit `--candidate-id`. If an older run created `candidate_workspaces/C015/session.json` with `C014`, startup reports the mismatch instead of displaying the wrong identity. Preserve that workspace and its audit events; create a correctly identified workspace for new work rather than editing `session.json` by hand. The `C014` paths in module examples below are sample paths for that candidate only.
 
 Run the non-GUI workspace check:
 
 ```bat
-python -m ai_assessment --headless-check --workspace candidate_workspaces\C014
+python -m ai_assessment --headless-check --candidate-id C015
 ```
 
 Run the full M1-M8 tests:

@@ -10,33 +10,21 @@ from .core.workspace import CandidateWorkspace
 from .modules.pages import PAGES, PageDefinition
 
 
-DEFAULT_CANDIDATE_ID = "C014"
-
-
 def default_workspace_root(candidate_id: str | None = None) -> Path:
-    configured = os.environ.get("AI_ASSESSMENT_WORKSPACE")
-    if configured:
-        return Path(configured)
     current = Path.cwd()
     if (current / "session.json").is_file():
         return current
     workspace_parent = current / "candidate_workspaces"
     if candidate_id:
         return workspace_parent / candidate_id
-    existing = [
-        folder for folder in workspace_parent.iterdir()
-        if folder.is_dir()
-        and candidate_id_from_folder(folder)
-        and (folder / "session.json").is_file()
-    ] if workspace_parent.is_dir() else []
-    if len(existing) == 1:
-        return existing[0]
-    if len(existing) > 1:
-        raise ValueError(
-            "Multiple candidate workspaces found. Choose one with "
-            "--workspace candidate_workspaces/C###."
-        )
-    return workspace_parent / DEFAULT_CANDIDATE_ID
+    configured = os.environ.get("AI_ASSESSMENT_WORKSPACE")
+    if configured:
+        return Path(configured)
+    raise ValueError(
+        "Select this computer's candidate workspace with --candidate-id C### "
+        "(your assigned ID) or --workspace candidate_workspaces/C###. "
+        "The app does not guess from existing workspaces."
+    )
 
 
 def candidate_id_from_folder(path: Path) -> str | None:
@@ -71,11 +59,13 @@ def load_workspace(path: Path, candidate_id: str | None = None) -> CandidateWork
             )
         workspace.record_event("workspace.opened", {"source": "app"})
         return workspace
-    return CandidateWorkspace.create(
-        path,
-        candidate_id=candidate_id or folder_id or DEFAULT_CANDIDATE_ID,
-        mode="training",
-    )
+    new_candidate_id = candidate_id or folder_id
+    if new_candidate_id is None:
+        raise ValueError(
+            "A new workspace needs a candidate ID. Use --candidate-id C### "
+            "or a candidate-style folder such as candidate_workspaces/C015."
+        )
+    return CandidateWorkspace.create(path, candidate_id=new_candidate_id, mode="training")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -84,14 +74,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--workspace",
         type=Path,
         default=None,
-        help="Candidate workspace folder. Uses the current workspace, a single existing candidate workspace, or ./candidate_workspaces/C014.",
+        help="Candidate workspace folder. If omitted, use --candidate-id, the current workspace, or AI_ASSESSMENT_WORKSPACE.",
     )
     parser.add_argument(
         "--candidate-id",
         default=None,
         help=(
             "Candidate identifier for a new workspace. Defaults to the candidate-style "
-            f"workspace folder name (or {DEFAULT_CANDIDATE_ID} for a generic folder); "
+            "workspace folder name; "
             "when reopening, it must match session.json."
         ),
     )
